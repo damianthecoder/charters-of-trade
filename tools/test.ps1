@@ -15,8 +15,5 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 dotnet run --project tests/ChartersOfTrade.Tests/ChartersOfTrade.Tests.csproj --no-build --no-restore
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-& (Join-Path $PSScriptRoot "godot.ps1") --headless --path .\src\ChartersOfTrade.Godot --build-solutions --quit
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
 & (Join-Path $PSScriptRoot "godot.ps1") --headless --path .\src\ChartersOfTrade.Godot --scene res://scenes/Main.tscn --quit-after 2
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
