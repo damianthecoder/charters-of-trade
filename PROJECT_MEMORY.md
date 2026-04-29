@@ -2,7 +2,7 @@
 
 ## Current Goal
 
-Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice: the route-contract branch exposes deterministic route contracts, while the visual UX branch now adds Routes/Profit/Demand map modes, city stamps, warnings, richer inspectors, and a contract control placeholder. The next step is to merge/rebase the visual UX work onto the route-contract branch and verify it in the normal Windows Godot/.NET environment.
+Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice: deterministic route contracts are now integrated with the visual UX map modes so Routes/Profit/Demand views, city stamps, warnings, richer inspectors, and route contract controls work together in the Godot prototype. The next step is adding lightweight interaction smoke coverage for map-mode clicks, city/route selection, tick controls, and contract selection.
 
 ## Latest Decisions
 
@@ -22,11 +22,11 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - The current P0 prototype loop is intentionally hosted in `GodotBridge` as a vertical-slice coordinator; clean core modules remain Godot-free.
 - Review pass on the interactive prototype fixed P1/P2 risks: world hashes now include terrain, market consumption uses declared needs, production cash only follows produced recipes, saves reject invalid negative state, and local test/benchmark scripts rebuild before running.
 - Visual direction starts with Ledger Cartography: historical map and merchant ledger materiality combined with modern flow-map readability. Territory remains quiet; routes, markets, margins, capacity, and supply pressure are the main visual language.
-- Visual selection, hover, animation, colors, and inspector state belong in the Godot presentation layer. They must not leak into the deterministic core or save format.
+- Visual selection, hover, animation, map modes, colors, contract UI placeholders, and inspector state belong in the Godot presentation layer. They must not leak into the deterministic core or save format.
 - Git is the project coordination baseline. Work should branch from `main`, keep generated Godot/.NET caches ignored, and use commits/checkpoints to make parallel agent work reviewable. The GitHub remote is `origin` at `https://github.com/damianthecoder/charters-of-trade.git`.
 - Route contract selection is gameplay state, not transient UI state. Pending selected contracts are included in `SaveGame.PendingRouteContractId` and therefore in the state hash.
 - `tools/test.ps1` uses the normal solution build plus Godot scene smoke. The separate Godot `--build-solutions --quit` step was removed because it hung and produced a Godot crash dialog in this workspace.
-- Cross-agent branch status: `origin/agent/route-contract-system` contains the route contract implementation; `origin/agent/visual-ux-map-modes` now contains commit `ac44fb6` with Godot presentation-layer map modes, warning marks, city stamps, inspector improvements, and a disabled route contract control placeholder built before the route-contract bridge API was available on that branch.
+- Cross-agent branch status: `origin/agent/visual-ux-map-modes` commit `ac44fb6` has been merged into the route-contract work. The integrated Godot UI now uses typed `AvailableContracts`, `SelectedContractId`, and `SelectRouteContract` instead of the visual branch's temporary reflection/placeholder bridge path.
 
 ## System State
 
@@ -38,7 +38,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - `Persistence.Core`: save game DTOs, JSON serialization, save validation, stable state hash, and pending route contract id support.
 - `Content.Core`: JSON content loader, validation, and canonical content hash for P0 resources/recipes.
 - `GodotBridge`: dependency-free bridge facade plus `PrototypeSession`, which runs a deterministic P0 loop across content, world, economy, logistics, route contracts, city growth, AI, and persistence hashing.
-- `ChartersOfTrade.Godot`: Godot .NET project with a `Main.tscn` prototype shell driven by `BootstrapPanel.cs`; on the route-contract branch it renders terrain, settlement nodes, route lines, KPI metrics, city summary, ledger, tick controls, city/route selection, hover states, route cash labels, animated route pulses, supply rings, priority signals, and a contextual inspector. On the visual UX branch, `BootstrapPanel.cs` additionally adds Routes/Profit/Demand map modes, city type stamps, demand/loss warning marks, richer inspectors, and a route contract control placeholder.
+- `ChartersOfTrade.Godot`: Godot .NET project with a `Main.tscn` prototype shell driven by `BootstrapPanel.cs`; it renders terrain, settlement nodes, route lines, KPI metrics, city summary, ledger, tick controls, city/route selection, hover states, route cash labels, animated route pulses, supply rings, route/city warning marks, city type stamps, Routes/Profit/Demand map modes, route contract controls, priority signals, and a contextual inspector.
 - `Tests`: custom console test runner for determinism, terrain-sensitive world hashes, content validation, prototype ticks, route contracts, declared consumption, save validation, save/load, economy, and AI; latest run passed 18/18.
 - `Benchmarks`: console runner reporting seed-level playability metrics plus time-to-profit, bankruptcy frequency, post-run cash, AI move, and unmet demand.
 
@@ -65,21 +65,26 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - Review fixes added after delegated review: terrain is part of world hash, save validation rejects negative state, Godot runtime output receives P0 content JSON, and tool scripts now rebuild before running tests/benchmarks.
 - Added the memory keeper ritual to `AGENTS.md` and recorded it as the project process for preserving context across compaction.
 - Visual flow-map slice added to `src/ChartersOfTrade.Godot/Scripts/BootstrapPanel.cs`: selectable cities/routes, highlighted connected flows, city supply rings, route cash labels, animated route pulses, contextual inspector, priority signals, and warmer ledger-cartography styling.
+- Visual UX map modes added to `src/ChartersOfTrade.Godot/Scripts/BootstrapPanel.cs`: Routes/Profit/Demand mode controls, city type stamps, demand and loss warning marks, clearer route/city inspectors, and a route contract control area that stays disabled until bridge contract data is available.
 - Visual research note recorded in `docs/research/2026-04-29-visual-layer.md`.
 - Visual checkpoint recorded in `docs/checkpoints/2026-04-29-visual-flow-map-slice.md`.
+- Visual UX map modes checkpoint recorded in `docs/checkpoints/2026-04-29-visual-ux-map-modes.md`.
 - Git baseline setup added `.gitattributes`, checkpointed the repository process in `docs/checkpoints/2026-04-29-git-baseline.md`, and connected `origin` to `https://github.com/damianthecoder/charters-of-trade.git`.
 - Parallel day-plan instructions added in `docs/agent-plans/route-contract-system-agent.md` and `docs/agent-plans/visual-ux-map-modes-agent.md`.
 - Route contract system added on branch `agent/route-contract-system`: `PrototypeRouteContractView`, `PrototypeSnapshot.AvailableContracts`, `PrototypeSnapshot.SelectedContractId`, `PrototypeSession.SelectRouteContract`, production reservation for contracted cargo, `SaveGame.PendingRouteContractId`, and deterministic tests.
 - `tools/test.ps1` now skips the redundant Godot `--build-solutions --quit` step and keeps Godot scene smoke.
 - Route contract checkpoint recorded in `docs/checkpoints/2026-04-29-route-contract-system.md`.
 - Cross-agent repo sync rechecked `origin/agent/visual-ux-map-modes`; it now contains `ac44fb6 Add visual UX map modes`, changing `PROJECT_MEMORY.md`, adding `docs/checkpoints/2026-04-29-visual-ux-map-modes.md`, and heavily updating `src/ChartersOfTrade.Godot/Scripts/BootstrapPanel.cs`.
+- Integrated visual UX map modes into `agent/route-contract-system`, resolved `PROJECT_MEMORY.md`, converted Godot route contract controls from reflection to typed `GodotBridge` API calls, fixed route inspector "no contracts" messaging, and refreshed contract summary text when the dropdown selection changes.
 
 ## Tests
 
 - `powershell -ExecutionPolicy Bypass -File .\tools\build.ps1`: passed, 0 warnings.
 - `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1`: 18/18 passed plus Godot headless scene smoke.
 - `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1`: 25/25 playable seeds, average unmet demand ratio 0.6967, median time to profit 1.0, bankruptcy frequency 0/25 after 12 ticks.
-- Visual UX branch `ac44fb6`: other agent reported `git diff --check` passed, but build/test/Godot smoke were not run in that session because `powershell`, `pwsh`, and `dotnet` were unavailable there.
+- Integrated branch verification after review fixes: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed outside the sandbox with 18/18 tests plus Godot headless scene smoke. The same command first failed inside the sandbox because Godot could not write `user://logs` and crashed with signal 11.
+- Integrated branch benchmark after review fixes: `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.6967, median time to profit 1.0, bankruptcy frequency 0/25 after 12 ticks.
+- Visual smoke capture passed with Godot movie maker at `artifacts/godot-smoke/visual-smoke00000002.png`; the rendered frame is nonblank, shows Routes/Profit/Demand buttons, city stamps, routes, KPIs, and an active route contract dropdown.
 
 ## Risks
 
@@ -97,10 +102,9 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - Parallel external collaboration now has a GitHub remote, but agents still need branch discipline to avoid overlapping edits.
 - `SaveGame.PendingRouteContractId` is a prototype save v1 extension; future save migrations should formalize command/contract state.
 - Godot `--build-solutions --quit` can hang/crash in this workspace; do not re-add it to the test script unless the underlying Godot CLI issue is understood.
-- The visual UX branch is still based on `main`, so it does not currently contain `AvailableContracts`, `SelectedContractId`, or `SelectRouteContract`; it should rebase or merge the route-contract branch before wiring contract controls.
-- The visual UX branch and route-contract branch both changed `PROJECT_MEMORY.md`; integration should preserve the route-contract save/hash/test-script decisions and the visual UX checkpoint/status.
-- The visual UX `BootstrapPanel.cs` was statically checked by the other agent but not compiled in Windows Godot/.NET yet; verify C#/Godot API compatibility after merging.
+- Godot CLI smoke may need to run outside sandboxed Codex sessions because Godot writes editor/runtime logs under `user://`.
+- Visual smoke verifies scene startup and a nonblank rendered frame, but still does not click map modes, city/route hit targets, `Advance Tick`, `Run 5`, or contract selection.
 
 ## Next Step
 
-Merge or rebase `agent/visual-ux-map-modes` onto the route-contract work, resolve `PROJECT_MEMORY.md`, then run full build/test/Godot smoke and manual UI QA for map modes, selection, tick controls, and contract controls.
+Add a lightweight interaction smoke path for map-mode clicks, city/route selection, tick controls, and contract selection.
