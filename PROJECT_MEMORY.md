@@ -23,7 +23,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - Review pass on the interactive prototype fixed P1/P2 risks: world hashes now include terrain, market consumption uses declared needs, production cash only follows produced recipes, saves reject invalid negative state, and local test/benchmark scripts rebuild before running.
 - Visual direction starts with Ledger Cartography: historical map and merchant ledger materiality combined with modern flow-map readability. Territory remains quiet; routes, markets, margins, capacity, and supply pressure are the main visual language.
 - Visual selection, hover, animation, colors, and inspector state belong in the Godot presentation layer. They must not leak into the deterministic core or save format.
-- Git is the project coordination baseline. Work should branch from `main`, keep generated Godot/.NET caches ignored, and use commits/checkpoints to make parallel agent work reviewable.
+- Git is the project coordination baseline. Work should branch from `main`, keep generated Godot/.NET caches ignored, and use commits/checkpoints to make parallel agent work reviewable. The GitHub remote is `origin` at `https://github.com/damianthecoder/charters-of-trade.git`.
 
 ## System State
 
@@ -64,7 +64,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - Visual flow-map slice added to `src/ChartersOfTrade.Godot/Scripts/BootstrapPanel.cs`: selectable cities/routes, highlighted connected flows, city supply rings, route cash labels, animated route pulses, contextual inspector, priority signals, and warmer ledger-cartography styling.
 - Visual research note recorded in `docs/research/2026-04-29-visual-layer.md`.
 - Visual checkpoint recorded in `docs/checkpoints/2026-04-29-visual-flow-map-slice.md`.
-- Git baseline setup added `.gitattributes` and checkpointed the repository process in `docs/checkpoints/2026-04-29-git-baseline.md`.
+- Git baseline setup added `.gitattributes`, checkpointed the repository process in `docs/checkpoints/2026-04-29-git-baseline.md`, and connected `origin` to `https://github.com/damianthecoder/charters-of-trade.git`.
 
 ## Tests
 
@@ -85,7 +85,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - `tools/test.ps1` now includes Godot smoke and may need the same elevated filesystem access in sandboxed Codex sessions.
 - The visual map currently redraws every frame for route pulse animation; acceptable for P0 scale, but cache static terrain/routes before larger maps.
 - Current Godot smoke verifies scene startup, not interactive clicks or nonblank visual assertions.
-- No Git remote is configured yet; external collaboration will need a remote after the local baseline commit.
+- Parallel external collaboration now has a GitHub remote, but agents still need branch discipline to avoid overlapping edits.
 
 ## Next Step
 
