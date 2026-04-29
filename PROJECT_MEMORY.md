@@ -2,7 +2,7 @@
 
 ## Current Goal
 
-Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice: the core systems now tick together, the bridge exposes deterministic route contracts, and the next step is Godot UI integration for choosing those contracts.
+Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice: the route-contract branch exposes deterministic route contracts, while the visual UX branch currently exists but has not advanced beyond `main`; the next step is to integrate UI controls after rebasing/merging against the route-contract work.
 
 ## Latest Decisions
 
@@ -26,6 +26,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - Git is the project coordination baseline. Work should branch from `main`, keep generated Godot/.NET caches ignored, and use commits/checkpoints to make parallel agent work reviewable. The GitHub remote is `origin` at `https://github.com/damianthecoder/charters-of-trade.git`.
 - Route contract selection is gameplay state, not transient UI state. Pending selected contracts are included in `SaveGame.PendingRouteContractId` and therefore in the state hash.
 - `tools/test.ps1` uses the normal solution build plus Godot scene smoke. The separate Godot `--build-solutions --quit` step was removed because it hung and produced a Godot crash dialog in this workspace.
+- Cross-agent branch status: `origin/agent/route-contract-system` contains the route contract implementation; `origin/agent/visual-ux-map-modes` currently points at the same commit as `origin/main` and has no implementation changes yet.
 
 ## System State
 
@@ -71,6 +72,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - Route contract system added on branch `agent/route-contract-system`: `PrototypeRouteContractView`, `PrototypeSnapshot.AvailableContracts`, `PrototypeSnapshot.SelectedContractId`, `PrototypeSession.SelectRouteContract`, production reservation for contracted cargo, `SaveGame.PendingRouteContractId`, and deterministic tests.
 - `tools/test.ps1` now skips the redundant Godot `--build-solutions --quit` step and keeps Godot scene smoke.
 - Route contract checkpoint recorded in `docs/checkpoints/2026-04-29-route-contract-system.md`.
+- Cross-agent repo sync checked `origin/agent/visual-ux-map-modes`; no code/doc progress was present beyond `origin/main` at the time of sync.
 
 ## Tests
 
@@ -94,7 +96,8 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - Parallel external collaboration now has a GitHub remote, but agents still need branch discipline to avoid overlapping edits.
 - `SaveGame.PendingRouteContractId` is a prototype save v1 extension; future save migrations should formalize command/contract state.
 - Godot `--build-solutions --quit` can hang/crash in this workspace; do not re-add it to the test script unless the underlying Godot CLI issue is understood.
+- The visual UX branch is still based on `main`, so it does not currently contain `AvailableContracts`, `SelectedContractId`, or `SelectRouteContract`; it should rebase or merge the route-contract branch before wiring contract controls.
 
 ## Next Step
 
-Integrate route contract controls in the Godot visual UX branch using `AvailableContracts`, `SelectedContractId`, and `SelectRouteContract`.
+Rebase or merge `agent/visual-ux-map-modes` onto the route-contract work, then integrate contract controls in the Godot UI using `AvailableContracts`, `SelectedContractId`, and `SelectRouteContract`.
