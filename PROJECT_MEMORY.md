@@ -65,6 +65,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - Visual research note recorded in `docs/research/2026-04-29-visual-layer.md`.
 - Visual checkpoint recorded in `docs/checkpoints/2026-04-29-visual-flow-map-slice.md`.
 - Git baseline setup added `.gitattributes`, checkpointed the repository process in `docs/checkpoints/2026-04-29-git-baseline.md`, and connected `origin` to `https://github.com/damianthecoder/charters-of-trade.git`.
+- Parallel day-plan instructions added in `docs/agent-plans/route-contract-system-agent.md` and `docs/agent-plans/visual-ux-map-modes-agent.md`.
 
 ## Tests
 
