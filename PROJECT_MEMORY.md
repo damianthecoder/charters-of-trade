@@ -2,7 +2,7 @@
 
 ## Current Goal
 
-Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice: the core systems now tick together, the Godot screen now exposes the first readable flow-map visual layer, and the next step is explicit route contract choice.
+Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice: the core systems now tick together, the Godot screen exposes flow-map modes and clearer inspection, and the next step is verifying the visual UX branch in the normal Godot/.NET environment before integrating explicit route contract choice.
 
 ## Latest Decisions
 
@@ -22,7 +22,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - The current P0 prototype loop is intentionally hosted in `GodotBridge` as a vertical-slice coordinator; clean core modules remain Godot-free.
 - Review pass on the interactive prototype fixed P1/P2 risks: world hashes now include terrain, market consumption uses declared needs, production cash only follows produced recipes, saves reject invalid negative state, and local test/benchmark scripts rebuild before running.
 - Visual direction starts with Ledger Cartography: historical map and merchant ledger materiality combined with modern flow-map readability. Territory remains quiet; routes, markets, margins, capacity, and supply pressure are the main visual language.
-- Visual selection, hover, animation, colors, and inspector state belong in the Godot presentation layer. They must not leak into the deterministic core or save format.
+- Visual selection, hover, animation, map modes, colors, contract UI placeholders, and inspector state belong in the Godot presentation layer. They must not leak into the deterministic core or save format.
 - Git is the project coordination baseline. Work should branch from `main`, keep generated Godot/.NET caches ignored, and use commits/checkpoints to make parallel agent work reviewable. The GitHub remote is `origin` at `https://github.com/damianthecoder/charters-of-trade.git`.
 
 ## System State
@@ -35,7 +35,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - `Persistence.Core`: save game DTOs, JSON serialization, save validation, stable state hash.
 - `Content.Core`: JSON content loader, validation, and canonical content hash for P0 resources/recipes.
 - `GodotBridge`: dependency-free bridge facade plus `PrototypeSession`, which runs a deterministic P0 loop across content, world, economy, logistics, city growth, AI, and persistence hashing.
-- `ChartersOfTrade.Godot`: Godot .NET project with a `Main.tscn` prototype shell driven by `BootstrapPanel.cs`; it renders terrain, settlement nodes, route lines, KPI metrics, city summary, ledger, tick controls, city/route selection, hover states, route cash labels, animated route pulses, supply rings, priority signals, and a contextual inspector.
+- `ChartersOfTrade.Godot`: Godot .NET project with a `Main.tscn` prototype shell driven by `BootstrapPanel.cs`; it renders terrain, settlement nodes, route lines, KPI metrics, city summary, ledger, tick controls, city/route selection, hover states, route cash labels, animated route pulses, supply rings, route/city warning marks, city type stamps, Routes/Profit/Demand map modes, a route contract control placeholder, priority signals, and a contextual inspector.
 - `Tests`: custom console test runner for determinism, terrain-sensitive world hashes, content validation, prototype ticks, declared consumption, save validation, save/load, economy, and AI; latest run passed 14/14.
 - `Benchmarks`: console runner reporting seed-level playability metrics plus time-to-profit, bankruptcy frequency, post-run cash, AI move, and unmet demand.
 
@@ -62,6 +62,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - Review fixes added after delegated review: terrain is part of world hash, save validation rejects negative state, Godot runtime output receives P0 content JSON, and tool scripts now rebuild before running tests/benchmarks.
 - Added the memory keeper ritual to `AGENTS.md` and recorded it as the project process for preserving context across compaction.
 - Visual flow-map slice added to `src/ChartersOfTrade.Godot/Scripts/BootstrapPanel.cs`: selectable cities/routes, highlighted connected flows, city supply rings, route cash labels, animated route pulses, contextual inspector, priority signals, and warmer ledger-cartography styling.
+- Visual UX map modes added to `src/ChartersOfTrade.Godot/Scripts/BootstrapPanel.cs`: Routes/Profit/Demand mode controls, city type stamps, demand and loss warning marks, clearer route/city inspectors, and a route contract control area that stays disabled until bridge contract data is available.
 - Visual research note recorded in `docs/research/2026-04-29-visual-layer.md`.
 - Visual checkpoint recorded in `docs/checkpoints/2026-04-29-visual-flow-map-slice.md`.
 - Git baseline setup added `.gitattributes`, checkpointed the repository process in `docs/checkpoints/2026-04-29-git-baseline.md`, and connected `origin` to `https://github.com/damianthecoder/charters-of-trade.git`.
@@ -72,6 +73,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - `powershell -ExecutionPolicy Bypass -File .\tools\build.ps1`: passed, 0 warnings.
 - `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1`: 14/14 passed plus Godot headless build/scene smoke.
 - `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1`: 25/25 playable seeds, average unmet demand ratio 0.6967, median time to profit 1.0, bankruptcy frequency 0/25 after 12 ticks.
+- Current Codex macOS session could not rerun build/test scripts because `powershell`, `pwsh`, and `dotnet` are not installed. `git diff --check` passed for the visual UX map modes branch.
 
 ## Risks
 
@@ -87,7 +89,8 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - The visual map currently redraws every frame for route pulse animation; acceptable for P0 scale, but cache static terrain/routes before larger maps.
 - Current Godot smoke verifies scene startup, not interactive clicks or nonblank visual assertions.
 - Parallel external collaboration now has a GitHub remote, but agents still need branch discipline to avoid overlapping edits.
+- Visual UX map modes are currently statically checked only in this Codex environment; full Godot scene smoke and interaction QA still need the normal Windows Godot/.NET workstation.
 
 ## Next Step
 
-Add explicit route contract choice backed by a lightweight interaction smoke test for map selection and tick controls.
+Run full build/test/Godot smoke on the normal Windows Godot/.NET workstation for the visual UX map modes branch.
