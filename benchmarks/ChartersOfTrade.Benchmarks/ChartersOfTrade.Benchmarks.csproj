@@ -1,0 +1,21 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\WorldGen.Core\ChartersOfTrade.WorldGen.Core.csproj" />
+    <ProjectReference Include="..\..\src\Economy.Core\ChartersOfTrade.Economy.Core.csproj" />
+    <ProjectReference Include="..\..\src\Logistics.Core\ChartersOfTrade.Logistics.Core.csproj" />
+    <ProjectReference Include="..\..\src\CitySim.Core\ChartersOfTrade.CitySim.Core.csproj" />
+    <ProjectReference Include="..\..\src\AI.Company\ChartersOfTrade.AI.Company.csproj" />
+    <ProjectReference Include="..\..\src\Persistence.Core\ChartersOfTrade.Persistence.Core.csproj" />
+    <ProjectReference Include="..\..\src\GodotBridge\ChartersOfTrade.GodotBridge.csproj" />
+    <ProjectReference Include="..\..\src\Content.Core\ChartersOfTrade.Content.Core.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

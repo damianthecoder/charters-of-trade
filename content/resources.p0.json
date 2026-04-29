@@ -1,0 +1,12 @@
+[
+  { "id": "grain", "tier": "staple", "tags": ["food", "agriculture", "storable"], "basePrice": 10, "weight": 1.0, "spoilDays": 0, "substitutes": ["fish"] },
+  { "id": "fish", "tier": "staple", "tags": ["food", "coastal", "perishable"], "basePrice": 12, "weight": 1.0, "spoilDays": 4, "substitutes": ["grain", "bread"] },
+  { "id": "wood", "tier": "staple", "tags": ["fuel", "construction"], "basePrice": 8, "weight": 1.5, "spoilDays": 0, "substitutes": [] },
+  { "id": "wool", "tier": "staple", "tags": ["cloth", "pasture"], "basePrice": 14, "weight": 0.8, "spoilDays": 0, "substitutes": [] },
+  { "id": "clay", "tier": "regional", "tags": ["craft", "river"], "basePrice": 9, "weight": 1.4, "spoilDays": 0, "substitutes": [] },
+  { "id": "iron", "tier": "regional", "tags": ["metal", "hills"], "basePrice": 24, "weight": 2.0, "spoilDays": 0, "substitutes": [] },
+  { "id": "bread", "tier": "manufactured", "tags": ["food", "processed"], "basePrice": 18, "weight": 0.8, "spoilDays": 6, "substitutes": ["grain", "fish"] },
+  { "id": "tools", "tier": "manufactured", "tags": ["industry", "metal"], "basePrice": 42, "weight": 1.2, "spoilDays": 0, "substitutes": [] },
+  { "id": "cloth", "tier": "manufactured", "tags": ["clothing", "processed"], "basePrice": 32, "weight": 0.6, "spoilDays": 0, "substitutes": [] },
+  { "id": "ceramics", "tier": "manufactured", "tags": ["civic", "craft"], "basePrice": 28, "weight": 1.0, "spoilDays": 0, "substitutes": [] }
+]

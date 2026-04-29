@@ -1,0 +1,15 @@
+.dotnet_home/
+.nuget_packages/
+.nuget_http_cache/
+.godot/
+.vs/
+.vscode/
+bin/
+obj/
+artifacts/
+TestResults/
+*.user
+*.suo
+*.tmp
+*.log
+export_credentials.cfg

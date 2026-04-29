@@ -1,0 +1,19 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\WorldGen.Core\ChartersOfTrade.WorldGen.Core.csproj" />
+    <ProjectReference Include="..\Economy.Core\ChartersOfTrade.Economy.Core.csproj" />
+    <ProjectReference Include="..\Logistics.Core\ChartersOfTrade.Logistics.Core.csproj" />
+    <ProjectReference Include="..\CitySim.Core\ChartersOfTrade.CitySim.Core.csproj" />
+    <ProjectReference Include="..\AI.Company\ChartersOfTrade.AI.Company.csproj" />
+    <ProjectReference Include="..\Persistence.Core\ChartersOfTrade.Persistence.Core.csproj" />
+    <ProjectReference Include="..\Content.Core\ChartersOfTrade.Content.Core.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

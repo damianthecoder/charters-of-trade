@@ -1,0 +1,14 @@
+<Project Sdk="Godot.NET.Sdk/4.6.1">
+
+  <ItemGroup>
+    <ProjectReference Include="..\GodotBridge\ChartersOfTrade.GodotBridge.csproj" />
+    <Content Include="..\..\content\*.json" Link="content\%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <EnableDynamicLoading>true</EnableDynamicLoading>
+    <RootNamespace>ChartersOfTrade.GodotLayer</RootNamespace>
+  </PropertyGroup>
+
+</Project>

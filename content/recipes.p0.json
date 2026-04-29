@@ -1,0 +1,9 @@
+[
+  { "id": "bake_bread", "buildingType": "bakery", "inputs": [{ "resourceId": "grain", "amount": 2 }], "outputs": [{ "resourceId": "bread", "amount": 1 }], "workforce": { "peasants": 2, "artisans": 1 }, "baseDays": 7, "requiresTech": "milling" },
+  { "id": "forge_tools", "buildingType": "smithy", "inputs": [{ "resourceId": "iron", "amount": 1 }, { "resourceId": "wood", "amount": 1 }], "outputs": [{ "resourceId": "tools", "amount": 1 }], "workforce": { "peasants": 1, "artisans": 2 }, "baseDays": 10, "requiresTech": "basic_smithing" },
+  { "id": "weave_cloth", "buildingType": "weaver", "inputs": [{ "resourceId": "wool", "amount": 2 }], "outputs": [{ "resourceId": "cloth", "amount": 1 }], "workforce": { "peasants": 1, "artisans": 2 }, "baseDays": 8, "requiresTech": "loom" },
+  { "id": "fire_ceramics", "buildingType": "kiln", "inputs": [{ "resourceId": "clay", "amount": 2 }, { "resourceId": "wood", "amount": 1 }], "outputs": [{ "resourceId": "ceramics", "amount": 1 }], "workforce": { "peasants": 2, "artisans": 1 }, "baseDays": 9, "requiresTech": "kiln_firing" },
+  { "id": "fish_market", "buildingType": "fishery", "inputs": [], "outputs": [{ "resourceId": "fish", "amount": 2 }], "workforce": { "peasants": 2, "artisans": 0 }, "baseDays": 3, "requiresTech": "" },
+  { "id": "grain_fields", "buildingType": "fields", "inputs": [], "outputs": [{ "resourceId": "grain", "amount": 3 }], "workforce": { "peasants": 3, "artisans": 0 }, "baseDays": 5, "requiresTech": "" }
+]
+
