@@ -2,7 +2,7 @@
 
 ## Current Goal
 
-Build the next P0 vertical-slice layer on top of merged route contracts and economy pressure: `agent/logistics-warehouse-policies` branches from synced `agent/economy-depth-pass` and adds first-pass warehouse policies, including safety stock, reorder points, shipment priority, source export reserves, and Godot UI copy that explains why a route contract is urgent. The next step is to prepare this stacked branch for review or continue into deeper warehouse automation.
+Build the next P0 vertical-slice layer as a player-facing test harness: `agent/full-hd-test-ui` branches from synced `agent/logistics-warehouse-policies` and makes the Godot prototype easier to test in Full HD. The UI now has a 1920x1080 project viewport, responsive layout profiles, a scrollable sidebar, seed reset, longer tick-run controls, and a System Test Bench probe showing cashflow, pressure, AI, contracts, and state hash.
 
 ## Latest Decisions
 
@@ -82,6 +82,7 @@ Build the next P0 vertical-slice layer on top of merged route contracts and econ
 - Stabilized Windows interaction smoke after verification: increased the Godot frame budget, read `RichTextLabel.GetParsedText()` for appended inspector text, and used a headless-safe post-interaction UI assertion instead of sampling a dummy viewport texture.
 - Economy depth pass started on `agent/economy-depth-pass` from synced `origin/main`: local prices now react to stockout, near-term coverage, surplus, and perishability; `PrototypeCityView` exposes `PrototypeMarketSignal`; Godot city/route inspectors and priority signals show local shortage reasons instead of only charter-town pressure.
 - Logistics/warehouse policy pass started on `agent/logistics-warehouse-policies` from synced `agent/economy-depth-pass`: `PrototypeMarketSignal` now includes safety stock, reorder point, shipment priority, and policy action; automatic logistics and route contracts prioritize urgent destination needs and avoid exporting source warehouse stock below safety reserve.
+- Full HD test UI pass started on `agent/full-hd-test-ui` from synced `agent/logistics-warehouse-policies`: Godot project viewport is now 1920x1080 with canvas-item stretch, the prototype shell uses responsive layout profiles and a scrollable sidebar, and the sidebar includes a System Test Bench with seed reset, Run 12, and a live system probe.
 
 ## Tests
 
@@ -94,6 +95,7 @@ Build the next P0 vertical-slice layer on top of merged route contracts and econ
 - Windows verification after smoke stabilization: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 18/18 tests and `INTERACTION_SMOKE PASS`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.6967, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 - Economy depth branch verification: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 20/20 tests and `INTERACTION_SMOKE PASS`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.6967, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 - Logistics/warehouse policy branch verification: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 22/22 tests and `INTERACTION_SMOKE PASS`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7055, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
+- Full HD test UI verification: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 22/22 tests and `INTERACTION_SMOKE PASS` at tick 18; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7055, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks. Godot movie writer produced a confirmed 1920x1080 control frame at `artifacts/godot-smoke/full-hd-test-ui00000035.png`.
 
 ## Risks
 
@@ -114,4 +116,4 @@ Build the next P0 vertical-slice layer on top of merged route contracts and econ
 
 ## Next Step
 
-Prepare the stacked logistics/warehouse branch for review, or continue with explicit warehouse automation controls: reorder toggles, reserve sliders, and route-level reservation policies in the Godot prototype.
+Use the Full HD test harness to manually exercise economy/logistics/city behavior, then continue with explicit warehouse automation controls: reorder toggles, reserve sliders, and route-level reservation policies in the Godot prototype.

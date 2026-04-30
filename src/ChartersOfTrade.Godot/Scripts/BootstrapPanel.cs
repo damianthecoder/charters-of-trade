@@ -23,6 +23,8 @@ public partial class BootstrapPanel : Control
     private RichTextLabel? _cities;
     private RichTextLabel? _inspector;
     private RichTextLabel? _warnings;
+    private RichTextLabel? _testProbe;
+    private SpinBox? _seedInput;
     private Label? _contractSummary;
     private OptionButton? _contractOptions;
     private Button? _contractActionButton;
@@ -34,6 +36,16 @@ public partial class BootstrapPanel : Control
     private string? _selectedCityId;
     private string? _selectedRouteId;
     private bool _refreshingContractControl;
+
+    private sealed record LayoutProfile(
+        int OuterMargin,
+        int RootSeparation,
+        Vector2 MapMinimum,
+        float SidebarWidth,
+        float InspectorHeight,
+        float WarningHeight,
+        float CitiesHeight,
+        float ProbeHeight);
 
     [Export]
     public int Seed { get; set; } = 424242;
@@ -59,6 +71,7 @@ public partial class BootstrapPanel : Control
     private void BuildPrototypeView()
     {
         ClearChildren();
+        var layout = LayoutFor(GetViewportRect().Size);
 
         var background = new ColorRect { Color = new Color(0.10f, 0.095f, 0.082f, 1.0f) };
         background.SetAnchorsPreset(LayoutPreset.FullRect);
@@ -66,10 +79,10 @@ public partial class BootstrapPanel : Control
 
         var margin = new MarginContainer();
         margin.SetAnchorsPreset(LayoutPreset.FullRect);
-        margin.AddThemeConstantOverride("margin_left", 18);
-        margin.AddThemeConstantOverride("margin_top", 18);
-        margin.AddThemeConstantOverride("margin_right", 18);
-        margin.AddThemeConstantOverride("margin_bottom", 18);
+        margin.AddThemeConstantOverride("margin_left", layout.OuterMargin);
+        margin.AddThemeConstantOverride("margin_top", layout.OuterMargin);
+        margin.AddThemeConstantOverride("margin_right", layout.OuterMargin);
+        margin.AddThemeConstantOverride("margin_bottom", layout.OuterMargin);
         AddChild(margin);
 
         var root = new HBoxContainer
@@ -77,27 +90,37 @@ public partial class BootstrapPanel : Control
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill
         };
-        root.AddThemeConstantOverride("separation", 14);
+        root.AddThemeConstantOverride("separation", layout.RootSeparation);
         margin.AddChild(root);
 
         _map = new PrototypeMapView
         {
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
-            CustomMinimumSize = new Vector2(760, 560)
+            CustomMinimumSize = layout.MapMinimum
         };
         _map.CitySelected += SelectCity;
         _map.RouteSelected += SelectRoute;
         _map.SelectionCleared += ClearSelection;
         root.AddChild(WrapPanel(_map));
 
+        var sidebarScroll = new ScrollContainer
+        {
+            SizeFlagsHorizontal = SizeFlags.ShrinkEnd,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(layout.SidebarWidth, layout.MapMinimum.Y),
+            HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled
+        };
+
         var sidebar = new VBoxContainer
         {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
             SizeFlagsVertical = SizeFlags.ExpandFill,
-            CustomMinimumSize = new Vector2(390, 560)
+            CustomMinimumSize = new Vector2(layout.SidebarWidth - 34, 0)
         };
         sidebar.AddThemeConstantOverride("separation", 10);
-        root.AddChild(WrapPanel(sidebar));
+        sidebarScroll.AddChild(sidebar);
+        root.AddChild(WrapPanel(sidebarScroll));
 
         sidebar.AddChild(CreateTitle("Charters of Trade"));
         sidebar.AddChild(CreateMutedLabel("Prototype systems loop"));
@@ -118,6 +141,23 @@ public partial class BootstrapPanel : Control
         AddMetric(metricGrid, "AI Move");
         AddMetric(metricGrid, "Unmet Demand");
 
+        sidebar.AddChild(CreateSectionLabel("System Test Bench"));
+        var seedRow = new HBoxContainer();
+        seedRow.AddThemeConstantOverride("separation", 8);
+        sidebar.AddChild(seedRow);
+        seedRow.AddChild(CreateMetricLabel("Seed", new Color(0.62f, 0.69f, 0.69f, 1.0f), HorizontalAlignment.Left));
+        _seedInput = new SpinBox
+        {
+            MinValue = 1,
+            MaxValue = int.MaxValue,
+            Step = 1,
+            Rounded = true,
+            Value = Seed,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 32)
+        };
+        seedRow.AddChild(_seedInput);
+
         var actions = new HBoxContainer();
         actions.AddThemeConstantOverride("separation", 8);
         sidebar.AddChild(actions);
@@ -129,6 +169,18 @@ public partial class BootstrapPanel : Control
         var runButton = CreateButton("Run 5");
         runButton.Pressed += AdvanceFiveTicks;
         actions.AddChild(runButton);
+
+        var runTwelveButton = CreateButton("Run 12");
+        runTwelveButton.Pressed += AdvanceTwelveTicks;
+        actions.AddChild(runTwelveButton);
+
+        var resetButton = CreateButton("Reset Seed");
+        resetButton.Pressed += ResetSeed;
+        sidebar.AddChild(resetButton);
+
+        _testProbe = CreateLog();
+        _testProbe.CustomMinimumSize = new Vector2(0, layout.ProbeHeight);
+        sidebar.AddChild(_testProbe);
 
         sidebar.AddChild(CreateSectionLabel("Map Mode"));
         var mapModes = new HBoxContainer();
@@ -159,17 +211,17 @@ public partial class BootstrapPanel : Control
 
         sidebar.AddChild(CreateSectionLabel("Inspector"));
         _inspector = CreateLog();
-        _inspector.CustomMinimumSize = new Vector2(0, 165);
+        _inspector.CustomMinimumSize = new Vector2(0, layout.InspectorHeight);
         sidebar.AddChild(_inspector);
 
         sidebar.AddChild(CreateSectionLabel("Priority Signals"));
         _warnings = CreateLog();
-        _warnings.CustomMinimumSize = new Vector2(0, 92);
+        _warnings.CustomMinimumSize = new Vector2(0, layout.WarningHeight);
         sidebar.AddChild(_warnings);
 
         sidebar.AddChild(CreateSectionLabel("Cities"));
         _cities = CreateLog();
-        _cities.CustomMinimumSize = new Vector2(0, 102);
+        _cities.CustomMinimumSize = new Vector2(0, layout.CitiesHeight);
         sidebar.AddChild(_cities);
 
         sidebar.AddChild(CreateSectionLabel("Ledger"));
@@ -202,30 +254,56 @@ public partial class BootstrapPanel : Control
 
     private void AdvanceOneTick()
     {
-        if (_session is null)
-        {
-            return;
-        }
-
-        _snapshot = _session.AdvanceTick();
-        KeepValidSelection();
-        UpdatePrototypeView();
+        AdvanceTicks(1);
     }
 
     private void AdvanceFiveTicks()
+    {
+        AdvanceTicks(5);
+    }
+
+    private void AdvanceTwelveTicks()
+    {
+        AdvanceTicks(12);
+    }
+
+    private void AdvanceTicks(int count)
     {
         if (_session is null)
         {
             return;
         }
 
-        for (var i = 0; i < 5; i++)
+        for (var i = 0; i < count; i++)
         {
             _snapshot = _session.AdvanceTick();
         }
 
         KeepValidSelection();
         UpdatePrototypeView();
+    }
+
+    private void ResetSeed()
+    {
+        if (_seedInput is not null)
+        {
+            Seed = Math.Clamp((int)_seedInput.Value, 1, int.MaxValue);
+        }
+
+        try
+        {
+            _session = new SimulationBridge().CreatePrototypeSession(Seed);
+            _snapshot = _session.Current;
+            _selectedCityId = null;
+            _selectedRouteId = null;
+            _pendingContractId = null;
+            _invalidContractId = null;
+            UpdatePrototypeView();
+        }
+        catch (Exception ex)
+        {
+            BuildFailureView(ex);
+        }
     }
 
     private void UpdatePrototypeView()
@@ -260,6 +338,7 @@ public partial class BootstrapPanel : Control
         UpdateInspector();
         UpdateContractControl();
         UpdateWarnings();
+        UpdateTestProbe();
 
         if (_ledger is not null)
         {
@@ -286,6 +365,8 @@ public partial class BootstrapPanel : Control
         _cities = null;
         _inspector = null;
         _warnings = null;
+        _testProbe = null;
+        _seedInput = null;
         _contractSummary = null;
         _contractOptions = null;
         _contractActionButton = null;
@@ -570,6 +651,36 @@ public partial class BootstrapPanel : Control
         }
     }
 
+    private void UpdateTestProbe()
+    {
+        if (_snapshot is null || _testProbe is null)
+        {
+            return;
+        }
+
+        _testProbe.Clear();
+        var topCity = _snapshot.Cities
+            .Select(city => new { City = city, Signal = TopPressureSignal(city) })
+            .Where(item => item.Signal is not null)
+            .OrderByDescending(item => item.Signal!.ShipmentPriority)
+            .ThenByDescending(item => item.Signal!.Scarcity)
+            .FirstOrDefault();
+        var bestContract = _snapshot.AvailableContracts
+            .OrderByDescending(contract => contract.ShipmentPriority)
+            .ThenByDescending(contract => contract.ExpectedNet)
+            .FirstOrDefault();
+        var currentLedger = _snapshot.Ledger.Where(entry => entry.Tick == _snapshot.Tick).ToArray();
+
+        _testProbe.AppendText($"Seed {Seed} | tick {_snapshot.Tick} | hash {ShortHash(_snapshot.SaveHash)}\n");
+        _testProbe.AppendText($"Cashflow {_snapshot.LastTickCashDelta:+0.00;-0.00;0.00} | events {currentLedger.Length} | AI {_snapshot.AiChoice.OpportunityId}\n");
+        _testProbe.AppendText(topCity?.Signal is null
+            ? "Top pressure: none\n"
+            : $"Top pressure: {topCity.City.Name} {ResourceLabel(topCity.Signal.ResourceId)} {topCity.Signal.MarketStock}/{topCity.Signal.ReorderPoint}, P{topCity.Signal.ShipmentPriority}, {topCity.Signal.PolicyAction}\n");
+        _testProbe.AppendText(bestContract is null
+            ? "Best contract: none\n"
+            : $"Best contract: P{bestContract.ShipmentPriority} {ResourceLabel(bestContract.ResourceId)} x{bestContract.Units}, net {FormatSignedMoney(bestContract.ExpectedNet)}\n");
+    }
+
     private static PanelContainer WrapPanel(Control child)
     {
         var panel = new PanelContainer
@@ -599,6 +710,45 @@ public partial class BootstrapPanel : Control
         panel.AddThemeStyleboxOverride("panel", style);
         panel.AddChild(child);
         return panel;
+    }
+
+    private static LayoutProfile LayoutFor(Vector2 viewportSize)
+    {
+        if (viewportSize.X >= 1800 && viewportSize.Y >= 1000)
+        {
+            return new LayoutProfile(
+                24,
+                18,
+                new Vector2(1120, 760),
+                520,
+                220,
+                124,
+                130,
+                116);
+        }
+
+        if (viewportSize.X >= 1500)
+        {
+            return new LayoutProfile(
+                20,
+                16,
+                new Vector2(900, 620),
+                460,
+                190,
+                108,
+                112,
+                104);
+        }
+
+        return new LayoutProfile(
+            16,
+            12,
+            new Vector2(720, 520),
+            400,
+            156,
+            84,
+            92,
+            92);
     }
 
     private static VBoxContainer CreateStack()
