@@ -15,5 +15,12 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 dotnet run --project tests/ChartersOfTrade.Tests/ChartersOfTrade.Tests.csproj --no-build --no-restore
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-& (Join-Path $PSScriptRoot "godot.ps1") --headless --path .\src\ChartersOfTrade.Godot --scene res://scenes/Main.tscn --quit-after 2
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+$godotSmokeOutput = & (Join-Path $PSScriptRoot "godot.ps1") --headless --path .\src\ChartersOfTrade.Godot --scene res://scenes/InteractionSmoke.tscn --quit-after 15 2>&1
+$godotSmokeExitCode = $LASTEXITCODE
+$godotSmokeText = $godotSmokeOutput -join [Environment]::NewLine
+if ($godotSmokeText.Length -gt 0) { Write-Host $godotSmokeText }
+if ($godotSmokeExitCode -ne 0) { exit $godotSmokeExitCode }
+if (-not $godotSmokeText.Contains("INTERACTION_SMOKE PASS")) {
+    Write-Host "Godot interaction smoke did not report INTERACTION_SMOKE PASS."
+    exit 1
+}

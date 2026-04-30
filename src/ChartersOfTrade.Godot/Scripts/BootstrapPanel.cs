@@ -29,8 +29,11 @@ public partial class BootstrapPanel : Control
     private IReadOnlyList<PrototypeRouteContractView> _visibleContracts = [];
     private PrototypeMapMode _mapMode = PrototypeMapMode.Routes;
     private string? _pendingContractId;
+    private string? _contractScopeKey;
+    private string? _invalidContractId;
     private string? _selectedCityId;
     private string? _selectedRouteId;
+    private bool _refreshingContractControl;
 
     [Export]
     public int Seed { get; set; } = 424242;
@@ -288,6 +291,9 @@ public partial class BootstrapPanel : Control
         _contractActionButton = null;
         _visibleContracts = [];
         _pendingContractId = null;
+        _contractScopeKey = null;
+        _invalidContractId = null;
+        _refreshingContractControl = false;
     }
 
     private void SelectCity(string cityId)
@@ -295,6 +301,7 @@ public partial class BootstrapPanel : Control
         _selectedCityId = cityId;
         _selectedRouteId = null;
         _pendingContractId = null;
+        _invalidContractId = null;
         UpdatePrototypeView();
     }
 
@@ -303,6 +310,7 @@ public partial class BootstrapPanel : Control
         _selectedRouteId = routeId;
         _selectedCityId = null;
         _pendingContractId = null;
+        _invalidContractId = null;
         UpdatePrototypeView();
     }
 
@@ -311,6 +319,7 @@ public partial class BootstrapPanel : Control
         _selectedCityId = null;
         _selectedRouteId = null;
         _pendingContractId = null;
+        _invalidContractId = null;
         UpdatePrototypeView();
     }
 
@@ -411,24 +420,34 @@ public partial class BootstrapPanel : Control
         var pricePressure = _snapshot.Prices
             .OrderByDescending(price => price.Scarcity)
             .Take(3)
-            .Select(price => $"{price.ResourceId} {price.Price:0.00} scarcity {price.Scarcity:0.00}")
+            .Select(price => $"{ResourceLabel(price.ResourceId)} {price.Price:0.00}, scarcity {price.Scarcity:0.00}")
             .ToArray();
         var routeLines = connectedRoutes
             .Take(4)
-            .Select(route => $"{route.Id} {route.Mode} cap {route.CapacityPerDay} cash {LastCashForRoute(_snapshot, route.Id):+0.00;-0.00;0.00}")
+            .Select(route => $"{route.Id} to {OtherEndpointName(route, city.Id)} ({route.Mode}, cap {route.CapacityPerDay}/day, cash {FormatSignedMoney(LastCashForRoute(_snapshot, route.Id))})")
+            .ToArray();
+        var cityContracts = _snapshot.AvailableContracts
+            .Where(contract => contract.FromNode == city.Id || contract.ToNode == city.Id)
+            .OrderByDescending(contract => contract.ExpectedNet)
+            .ThenBy(contract => contract.Id, StringComparer.Ordinal)
             .ToArray();
 
-        _inspector.AppendText($"{city.Name}\n");
-        _inspector.AppendText($"{CityKindLabel(CityKindFor(city.Id))} | population {city.Population} | {city.Level}\n");
-        _inspector.AppendText($"Supply {city.SupplySatisfaction:0.00} | pressure {SupplyPressure(city):0.00}\n");
+        _inspector.AppendText($"{city.Name} ({CityKindLabel(CityKindFor(city.Id))})\n");
+        _inspector.AppendText($"Population {city.Population} | level {city.Level}\n");
+        _inspector.AppendText($"Supply satisfaction {city.SupplySatisfaction:0.00} | unmet demand {SupplyPressure(city):0.00}\n");
         _inspector.AppendText($"Market stock: {StockSummary(city.MarketStock)}\n");
         _inspector.AppendText($"Company warehouse: {StockSummary(city.CompanyWarehouse)}\n");
-        _inspector.AppendText($"Connected routes ({connectedRoutes.Length}): {string.Join(", ", routeLines)}\n");
-        _inspector.AppendText($"Price pressure: {string.Join(", ", pricePressure)}\n");
+        _inspector.AppendText(connectedRoutes.Length > 0
+            ? $"Routes serving city ({connectedRoutes.Length}): {string.Join(", ", routeLines)}\n"
+            : "Routes serving city: none\n");
+        _inspector.AppendText(cityContracts.Length > 0
+            ? $"Contracts serving city: {cityContracts.Length}; best {ContractBrief(cityContracts[0])}\n"
+            : "Contracts serving city: none currently available\n");
+        _inspector.AppendText($"Charter market pressure: {string.Join(", ", pricePressure)}\n");
 
         if (recentLedger.Length > 0)
         {
-            _inspector.AppendText("Recent effects:\n");
+            _inspector.AppendText("Recent city effects:\n");
             foreach (var entry in recentLedger)
             {
                 _inspector.AppendText($"T{entry.Tick} {entry.Category}: {entry.Message}\n");
@@ -451,17 +470,34 @@ public partial class BootstrapPanel : Control
             .Take(5)
             .ToArray();
         var lastCash = recentLedger.Where(entry => entry.Tick == _snapshot.Tick).Sum(entry => entry.CashDelta);
-        var routeDemand = RouteDemandSignal(route.FromNode, route.ToNode);
-        var contractCount = _snapshot.AvailableContracts.Count(contract => contract.RouteId == route.Id);
+        var routeDemand = RouteDemandSignal(route);
+        var routeContracts = _snapshot.AvailableContracts
+            .Where(contract => contract.RouteId == route.Id)
+            .OrderByDescending(contract => contract.ExpectedNet)
+            .ThenBy(contract => contract.Id, StringComparer.Ordinal)
+            .ToArray();
+        var selectedContract = SelectedContract();
+        var selectedRouteContract = selectedContract is not null && selectedContract.RouteId == route.Id
+            ? selectedContract
+            : null;
 
-        _inspector.AppendText($"{route.Id}\n");
+        _inspector.AppendText($"Route {route.Id}\n");
         _inspector.AppendText($"{from?.Name ?? route.FromNode} -> {to?.Name ?? route.ToNode} | {route.Mode}\n");
-        _inspector.AppendText($"Capacity/day {route.CapacityPerDay} | lead {route.LeadDays}d | cost/unit {route.CostPerUnit:0.00}\n");
-        _inspector.AppendText($"Cashflow this tick: {lastCash:+0.00;-0.00;0.00}\n");
-        _inspector.AppendText($"Demand signal: {routeDemand}\n");
-        _inspector.AppendText(contractCount > 0
-            ? $"Contract options: {contractCount}\n"
-            : "Contract options: none for this route\n");
+        _inspector.AppendText($"Capacity {route.CapacityPerDay}/day | lead time {route.LeadDays} {DayLabel(route.LeadDays)} | cost {route.CostPerUnit:0.00}/unit\n");
+        _inspector.AppendText($"This tick route cashflow: {FormatSignedMoney(lastCash)}\n");
+        _inspector.AppendText($"Endpoint demand: {routeDemand}\n");
+        if (selectedRouteContract is not null)
+        {
+            _inspector.AppendText($"Selected contract: {ContractBrief(selectedRouteContract)}\n");
+        }
+        else if (routeContracts.Length > 0)
+        {
+            _inspector.AppendText($"Best contract: {ContractBrief(routeContracts[0])} ({routeContracts.Length} available)\n");
+        }
+        else
+        {
+            _inspector.AppendText("Contracts: none currently available for this route\n");
+        }
 
         if (recentLedger.Length == 0)
         {
@@ -695,23 +731,21 @@ public partial class BootstrapPanel : Control
         return parts.Length == 0 ? "empty" : string.Join(", ", parts);
     }
 
-    private string RouteDemandSignal(string fromNode, string toNode)
+    private string RouteDemandSignal(TradeRoute route)
     {
         if (_snapshot is null)
         {
             return "unknown";
         }
 
-        var from = _snapshot.Cities.FirstOrDefault(city => city.Id == fromNode);
-        var to = _snapshot.Cities.FirstOrDefault(city => city.Id == toNode);
+        var from = _snapshot.Cities.FirstOrDefault(city => city.Id == route.FromNode);
+        var to = _snapshot.Cities.FirstOrDefault(city => city.Id == route.ToNode);
         if (from is null || to is null)
         {
             return "unknown";
         }
 
-        var fromStock = from.CompanyWarehouse.Values.DefaultIfEmpty(0).Sum();
-        var toPressure = 1.0 - to.SupplySatisfaction;
-        return $"{from.Name} stock {fromStock}, {to.Name} pressure {toPressure:0.00}";
+        return $"{from.Name} warehouse {StockUnits(from.CompanyWarehouse)}, unmet {SupplyPressure(from):0.00}; {to.Name} warehouse {StockUnits(to.CompanyWarehouse)}, unmet {SupplyPressure(to):0.00}";
     }
 
     private void UpdateContractControl()
@@ -722,8 +756,11 @@ public partial class BootstrapPanel : Control
         }
 
         var selectedContractId = _snapshot.SelectedContractId;
+        var selectedContract = SelectedContract();
+        var scopeKey = ContractScopeKey();
+        var sameScope = string.Equals(_contractScopeKey, scopeKey, StringComparison.Ordinal);
         var pendingContractId = _pendingContractId;
-        if (_visibleContracts.Count > 0 && _contractOptions.Selected >= 0)
+        if (sameScope && _visibleContracts.Count > 0 && _contractOptions.Selected >= 0)
         {
             var previousIndex = Math.Clamp(_contractOptions.Selected, 0, _visibleContracts.Count - 1);
             pendingContractId = _visibleContracts[previousIndex].Id;
@@ -735,55 +772,105 @@ public partial class BootstrapPanel : Control
             .ThenBy(contract => contract.Id, StringComparer.Ordinal)
             .ToArray();
 
+        var invalidContractId = _invalidContractId;
+        if (invalidContractId is null
+            && sameScope
+            && pendingContractId is not null
+            && _snapshot.AvailableContracts.All(contract => contract.Id != pendingContractId))
+        {
+            invalidContractId = pendingContractId;
+        }
+
+        _refreshingContractControl = true;
         _contractOptions.Clear();
+        _contractScopeKey = scopeKey;
 
         if (_visibleContracts.Count == 0)
         {
-            _contractOptions.AddItem("No matching contracts");
+            _contractOptions.AddItem(EmptyContractOptionLabel());
             _contractOptions.Disabled = true;
             _contractActionButton.Disabled = true;
-            _contractSummary.Text = ContractScopeText("No available route contract for");
+            _contractActionButton.Text = "No Contracts";
+            _pendingContractId = null;
+            _contractSummary.Text = EmptyContractSummary(invalidContractId, selectedContract);
+            _invalidContractId = null;
+            _refreshingContractControl = false;
             return;
         }
 
-        var preferredContractId = selectedContractId ?? pendingContractId;
+        var preferredContractId = _visibleContracts.Any(contract => string.Equals(contract.Id, selectedContractId, StringComparison.Ordinal))
+            ? selectedContractId
+            : _visibleContracts.Any(contract => string.Equals(contract.Id, pendingContractId, StringComparison.Ordinal))
+                ? pendingContractId
+                : null;
+        var selectedIndex = 0;
         for (var i = 0; i < _visibleContracts.Count; i++)
         {
             var contract = _visibleContracts[i];
-            _contractOptions.AddItem(ContractOptionLabel(contract), i);
+            _contractOptions.AddItem(ContractOptionLabel(contract, i), i);
             if (string.Equals(contract.Id, preferredContractId, StringComparison.Ordinal))
             {
-                _contractOptions.Select(i);
+                selectedIndex = i;
             }
         }
 
-        if (_contractOptions.Selected < 0)
-        {
-            _contractOptions.Select(0);
-        }
-
+        _contractOptions.Select(selectedIndex);
         _contractOptions.Disabled = false;
-        _contractActionButton.Disabled = false;
-        RefreshContractSummary(selectedContractId);
+        _refreshingContractControl = false;
+        RefreshContractSummary(selectedContractId, invalidContractId, selectedContract);
+        _invalidContractId = null;
     }
 
     private void OnContractOptionSelected(long _)
     {
-        RefreshContractSummary(_snapshot?.SelectedContractId);
-    }
-
-    private void RefreshContractSummary(string? selectedContractId)
-    {
-        if (_contractSummary is null || _contractOptions is null || _visibleContracts.Count == 0)
+        if (_refreshingContractControl)
         {
             return;
         }
 
-        var selected = _visibleContracts[Math.Clamp(_contractOptions.Selected, 0, _visibleContracts.Count - 1)];
-        _pendingContractId = selected.Id;
-        _contractSummary.Text = selectedContractId is not null && string.Equals(selected.Id, selectedContractId, StringComparison.Ordinal)
-            ? $"Selected contract: {ContractSummary(selected)}"
-            : $"Best contract: {ContractSummary(selected)}";
+        _invalidContractId = null;
+        RefreshContractSummary(_snapshot?.SelectedContractId, selectedContract: SelectedContract());
+    }
+
+    private void RefreshContractSummary(
+        string? selectedContractId,
+        string? invalidContractId = null,
+        PrototypeRouteContractView? selectedContract = null)
+    {
+        if (_contractSummary is null || _contractOptions is null || _contractActionButton is null || _visibleContracts.Count == 0)
+        {
+            return;
+        }
+
+        var candidate = _visibleContracts[Math.Clamp(_contractOptions.Selected, 0, _visibleContracts.Count - 1)];
+        var candidateIsSelected = selectedContractId is not null && string.Equals(candidate.Id, selectedContractId, StringComparison.Ordinal);
+        var candidateIsBest = string.Equals(candidate.Id, _visibleContracts[0].Id, StringComparison.Ordinal);
+        var summaryLead = candidateIsSelected
+            ? "Selected contract"
+            : candidateIsBest
+                ? "Best available"
+                : "Preview contract";
+        var lines = new List<string>();
+
+        if (invalidContractId is not null)
+        {
+            lines.Add($"Previous contract {invalidContractId} is no longer available.");
+        }
+
+        lines.Add($"{summaryLead}: {ContractSummary(candidate)}");
+        if (!candidateIsSelected && selectedContract is not null)
+        {
+            lines.Add($"Selected contract remains: {ContractBrief(selectedContract)}.");
+        }
+
+        _pendingContractId = candidate.Id;
+        _contractSummary.Text = string.Join("\n", lines);
+        _contractActionButton.Disabled = candidateIsSelected;
+        _contractActionButton.Text = candidateIsSelected
+            ? "Selected Contract"
+            : selectedContract is null
+                ? "Select Contract"
+                : "Switch Contract";
     }
 
     private void SelectVisibleRouteContract()
@@ -794,7 +881,17 @@ public partial class BootstrapPanel : Control
         }
 
         var index = Math.Clamp(_contractOptions.Selected, 0, _visibleContracts.Count - 1);
-        _session.SelectRouteContract(_visibleContracts[index].Id);
+        var contractId = _visibleContracts[index].Id;
+        if (!_session.SelectRouteContract(contractId))
+        {
+            _invalidContractId = contractId;
+        }
+        else
+        {
+            _invalidContractId = null;
+            _pendingContractId = contractId;
+        }
+
         _snapshot = _session.Current;
 
         KeepValidSelection();
@@ -817,30 +914,124 @@ public partial class BootstrapPanel : Control
         return true;
     }
 
-    private string ContractScopeText(string prefix)
+    private string ContractScopeKey()
     {
         if (_selectedRouteId is not null)
         {
-            return $"{prefix} route {_selectedRouteId}.";
+            return $"route:{_selectedRouteId}";
         }
 
         if (_selectedCityId is not null)
         {
-            var city = _snapshot?.Cities.FirstOrDefault(city => city.Id == _selectedCityId);
-            return $"{prefix} {city?.Name ?? _selectedCityId}.";
+            return $"city:{_selectedCityId}";
         }
 
-        return $"{prefix} the current map.";
+        return "map";
     }
 
-    private static string ContractOptionLabel(PrototypeRouteContractView contract)
+    private string EmptyContractOptionLabel()
     {
-        return $"{contract.ResourceId} {contract.FromNode}->{contract.ToNode} net {contract.ExpectedNet.ToString("+0.00;-0.00;0.00", CultureInfo.InvariantCulture)}";
+        if (_selectedRouteId is not null)
+        {
+            return "No contracts on this route";
+        }
+
+        if (_selectedCityId is not null)
+        {
+            return "No contracts for this city";
+        }
+
+        return "No route contracts available";
     }
 
-    private static string ContractSummary(PrototypeRouteContractView contract)
+    private string EmptyContractSummary(string? invalidContractId, PrototypeRouteContractView? selectedContract)
     {
-        return $"{contract.ResourceId} on {contract.RouteId}, revenue {contract.ExpectedRevenue.ToString("0.00", CultureInfo.InvariantCulture)}, cost {contract.TransportCost.ToString("0.00", CultureInfo.InvariantCulture)}, net {contract.ExpectedNet.ToString("+0.00;-0.00;0.00", CultureInfo.InvariantCulture)}, cap {contract.CapacityPerDay}/day";
+        var lines = new List<string>();
+        if (invalidContractId is not null)
+        {
+            lines.Add($"Previous contract {invalidContractId} is no longer available.");
+        }
+
+        lines.Add(_selectedRouteId is not null
+            ? $"No route contracts are currently available on {RouteDisplayName(_selectedRouteId)}."
+            : _selectedCityId is not null
+                ? $"No route contracts currently serve {CityName(_selectedCityId)}."
+                : "No route contracts are currently available.");
+
+        if (selectedContract is not null)
+        {
+            lines.Add($"Selected contract remains: {ContractBrief(selectedContract)}.");
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private string ContractOptionLabel(PrototypeRouteContractView contract, int index)
+    {
+        var rank = index == 0 ? "Best" : $"#{index + 1}";
+        return $"{rank}: {ResourceLabel(contract.ResourceId)} | {CityName(contract.FromNode)} -> {CityName(contract.ToNode)} | {FormatSignedMoney(contract.ExpectedNet)} net";
+    }
+
+    private string ContractSummary(PrototypeRouteContractView contract)
+    {
+        return $"{ResourceLabel(contract.ResourceId)} from {CityName(contract.FromNode)} to {CityName(contract.ToNode)} on {RouteDisplayName(contract.RouteId)}; revenue {contract.ExpectedRevenue.ToString("0.00", CultureInfo.InvariantCulture)}, cost {contract.TransportCost.ToString("0.00", CultureInfo.InvariantCulture)}, net {FormatSignedMoney(contract.ExpectedNet)}, capacity {contract.CapacityPerDay}/day";
+    }
+
+    private string ContractBrief(PrototypeRouteContractView contract)
+    {
+        return $"{ResourceLabel(contract.ResourceId)} {CityName(contract.FromNode)} -> {CityName(contract.ToNode)} on {contract.RouteId} ({FormatSignedMoney(contract.ExpectedNet)} net)";
+    }
+
+    private PrototypeRouteContractView? SelectedContract()
+    {
+        if (_snapshot?.SelectedContractId is null)
+        {
+            return null;
+        }
+
+        return _snapshot.AvailableContracts.FirstOrDefault(contract => contract.Id == _snapshot.SelectedContractId);
+    }
+
+    private string CityName(string cityId)
+    {
+        return _snapshot?.Cities.FirstOrDefault(city => city.Id == cityId)?.Name ?? cityId;
+    }
+
+    private string OtherEndpointName(TradeRoute route, string cityId)
+    {
+        var otherId = route.FromNode == cityId ? route.ToNode : route.FromNode;
+        return CityName(otherId);
+    }
+
+    private string RouteDisplayName(string routeId)
+    {
+        var route = _snapshot?.Routes.FirstOrDefault(route => route.Id == routeId);
+        return route is null
+            ? routeId
+            : $"{route.Id} ({CityName(route.FromNode)} -> {CityName(route.ToNode)})";
+    }
+
+    private static string ResourceLabel(string resourceId)
+    {
+        var words = resourceId.Split(new[] { '_', '-' }, StringSplitOptions.RemoveEmptyEntries);
+        return words.Length == 0
+            ? resourceId
+            : string.Join(" ", words.Select(word => CultureInfo.InvariantCulture.TextInfo.ToTitleCase(word.ToLowerInvariant())));
+    }
+
+    private static string FormatSignedMoney(decimal value)
+    {
+        return value.ToString("+0.00;-0.00;0.00", CultureInfo.InvariantCulture);
+    }
+
+    private static int StockUnits(IReadOnlyDictionary<string, int> stock)
+    {
+        return stock.Values.DefaultIfEmpty(0).Sum();
+    }
+
+    private static string DayLabel(int days)
+    {
+        return days == 1 ? "day" : "days";
     }
 
     private static string CityKindLabel(string kind)
