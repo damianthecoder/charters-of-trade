@@ -16,7 +16,7 @@ Continued from synced Full HD/visual readability work onto `agent/graphic-polish
 
 ## Tests
 
-- `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1`: passed with 25/25 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`; produced `artifacts/godot-smoke/visual-smoke-20260430-04040700000002.png` at 1920x1080.
+- `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1`: passed after merging `origin/main` with 25/25 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`; produced `artifacts/godot-smoke/visual-smoke-20260430-04072400000002.png` at 1920x1080.
 - `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1`: passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 
 ## Review Notes
