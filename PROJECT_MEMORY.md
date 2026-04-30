@@ -2,7 +2,7 @@
 
 ## Current Goal
 
-Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice: deterministic route contracts are integrated with the visual UX map modes, route contract controls are clearer, and the Godot test path now includes interaction smoke coverage for map-mode clicks, city/route selection, tick controls, contract selection, and post-interaction visual content. The next step is running full Windows Godot/.NET verification and preparing the integrated branch PR.
+Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice: deterministic route contracts are integrated with the visual UX map modes, route contract controls are clearer, and the Godot test path now includes interaction smoke coverage for map-mode clicks, city/route selection, tick controls, contract selection, and post-interaction UI content. Windows Godot/.NET verification now passes after stabilizing the smoke runner; the next step is committing/pushing the verified branch and opening the integrated branch PR.
 
 ## Latest Decisions
 
@@ -39,7 +39,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - `Content.Core`: JSON content loader, validation, and canonical content hash for P0 resources/recipes.
 - `GodotBridge`: dependency-free bridge facade plus `PrototypeSession`, which runs a deterministic P0 loop across content, world, economy, logistics, route contracts, city growth, AI, and persistence hashing.
 - `ChartersOfTrade.Godot`: Godot .NET project with a `Main.tscn` prototype shell driven by `BootstrapPanel.cs`; it renders terrain, settlement nodes, route lines, KPI metrics, city summary, ledger, tick controls, city/route selection, hover states, route cash labels, animated route pulses, supply rings, route/city warning marks, city type stamps, Routes/Profit/Demand map modes, polished route contract controls, priority signals, and a contextual inspector. `InteractionSmoke.tscn` loads the real scene and exercises expected user actions headlessly.
-- `Tests`: custom console test runner for determinism, terrain-sensitive world hashes, content validation, prototype ticks, route contracts, declared consumption, save validation, save/load, economy, and AI; latest run passed 18/18.
+- `Tests`: custom console test runner for determinism, terrain-sensitive world hashes, content validation, prototype ticks, route contracts, declared consumption, save validation, save/load, economy, AI, and Godot interaction smoke; latest Windows run passed 18/18 plus `INTERACTION_SMOKE PASS`.
 - `Benchmarks`: console runner reporting seed-level playability metrics plus time-to-profit, bankruptcy frequency, post-run cash, AI move, and unmet demand.
 
 ## Changed Areas
@@ -78,6 +78,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - Integrated visual UX map modes into `agent/route-contract-system`, resolved `PROJECT_MEMORY.md`, converted Godot route contract controls from reflection to typed `GodotBridge` API calls, fixed route inspector "no contracts" messaging, and refreshed contract summary text when the dropdown selection changes.
 - Stabilized the integrated route contract UX: contract dropdown labels now show rank, city names, resource labels, and signed net values; summaries distinguish selected, best, preview, empty, and stale contract states; city/route inspectors explain contract context more directly.
 - Added Godot interaction smoke tooling in `InteractionSmokeRunner.cs` and `InteractionSmoke.tscn`; `tools/test.ps1` now runs this smoke path instead of only starting `Main.tscn`.
+- Stabilized Windows interaction smoke after verification: increased the Godot frame budget, read `RichTextLabel.GetParsedText()` for appended inspector text, and used a headless-safe post-interaction UI assertion instead of sampling a dummy viewport texture.
 
 ## Tests
 
@@ -87,7 +88,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - Integrated branch verification after review fixes: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed outside the sandbox with 18/18 tests plus Godot headless scene smoke. The same command first failed inside the sandbox because Godot could not write `user://logs` and crashed with signal 11.
 - Integrated branch benchmark after review fixes: `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.6967, median time to profit 1.0, bankruptcy frequency 0/25 after 12 ticks.
 - Visual smoke capture passed with Godot movie maker at `artifacts/godot-smoke/visual-smoke00000002.png`; the rendered frame is nonblank, shows Routes/Profit/Demand buttons, city stamps, routes, KPIs, and an active route contract dropdown.
-- Current Codex macOS session: `git diff --check` passed. `dotnet`, `pwsh`, and `powershell` are not installed, so `tools/test.ps1` and `tools/benchmark.ps1` could not be rerun here after adding interaction smoke.
+- Windows verification after smoke stabilization: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 18/18 tests and `INTERACTION_SMOKE PASS`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.6967, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 
 ## Risks
 
@@ -105,8 +106,6 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - `SaveGame.PendingRouteContractId` is a prototype save v1 extension; future save migrations should formalize command/contract state.
 - Godot `--build-solutions --quit` can hang/crash in this workspace; do not re-add it to the test script unless the underlying Godot CLI issue is understood.
 - Godot CLI smoke may need to run outside sandboxed Codex sessions because Godot writes editor/runtime logs under `user://`.
-- The interaction smoke path is statically checked in this macOS Codex session but still needs a real Windows Godot/.NET run to prove Godot API compatibility.
-
 ## Next Step
 
-Run `tools/test.ps1` and `tools/benchmark.ps1` on the normal Windows Godot/.NET workstation, then push `agent/route-contract-system` and open the PR to `main`.
+Commit/push the Windows-verified smoke stabilization on `agent/route-contract-system`, then open the PR to `main`.

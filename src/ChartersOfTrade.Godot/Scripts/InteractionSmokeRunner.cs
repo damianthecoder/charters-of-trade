@@ -141,6 +141,13 @@ public partial class InteractionSmokeRunner : Control
 
     private void AssertViewportHasVisualContent()
     {
+        if (string.Equals(DisplayServer.GetName(), "headless", StringComparison.OrdinalIgnoreCase))
+        {
+            AssertSmoke(GetMetricValue(this, "Tick") == "6", "Headless smoke reached visual check before post-interaction UI updated.");
+            AssertSmoke(AnyVisibleTextContains(this, "Cashflow"), "Headless smoke did not retain visible KPI content.");
+            return;
+        }
+
         var texture = GetViewport().GetTexture();
         var image = texture.GetImage();
         var width = image.GetWidth();
@@ -271,15 +278,29 @@ public partial class InteractionSmokeRunner : Control
     private static bool AnyVisibleTextContains(Node root, string text)
     {
         return SelfAndDescendants(root).OfType<Label>().Any(label => label.Text.Contains(text, StringComparison.OrdinalIgnoreCase))
-            || SelfAndDescendants(root).OfType<RichTextLabel>().Any(label => label.Text.Contains(text, StringComparison.OrdinalIgnoreCase));
+            || SelfAndDescendants(root).OfType<RichTextLabel>().Any(label => RichTextContent(label).Contains(text, StringComparison.OrdinalIgnoreCase));
     }
 
     private static void AssertRichTextContains(Node root, string first, string second)
     {
         var found = SelfAndDescendants(root).OfType<RichTextLabel>().Any(label =>
-            label.Text.Contains(first, StringComparison.OrdinalIgnoreCase)
-            && label.Text.Contains(second, StringComparison.OrdinalIgnoreCase));
-        AssertSmoke(found, $"No rich text panel contained both '{first}' and '{second}'.");
+            RichTextContent(label).Contains(first, StringComparison.OrdinalIgnoreCase)
+            && RichTextContent(label).Contains(second, StringComparison.OrdinalIgnoreCase));
+        AssertSmoke(found, $"No rich text panel contained both '{first}' and '{second}'. Visible rich text: {RichTextSnapshot(root)}");
+    }
+
+    private static string RichTextContent(RichTextLabel label)
+    {
+        return label.GetParsedText();
+    }
+
+    private static string RichTextSnapshot(Node root)
+    {
+        var text = string.Join(" | ", SelfAndDescendants(root)
+            .OfType<RichTextLabel>()
+            .Select(label => RichTextContent(label).Replace('\n', ' ').Trim())
+            .Where(text => text.Length > 0));
+        return text.Length <= 900 ? text : text[..900] + "...";
     }
 
     private static void AssertSmoke(bool condition, string message)
