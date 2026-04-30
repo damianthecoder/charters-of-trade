@@ -24,3 +24,18 @@ if (-not $godotSmokeText.Contains("INTERACTION_SMOKE PASS")) {
     Write-Host "Godot interaction smoke did not report INTERACTION_SMOKE PASS."
     exit 1
 }
+
+if ($env:COT_SKIP_VISUAL_SMOKE -ne "1") {
+    $visualSmokeOutput = & (Join-Path $PSScriptRoot "visual-smoke.ps1") 2>&1
+    $visualSmokeExitCode = $LASTEXITCODE
+    $visualSmokeText = $visualSmokeOutput -join [Environment]::NewLine
+    if ($visualSmokeText.Length -gt 0) { Write-Host $visualSmokeText }
+    if ($visualSmokeExitCode -ne 0) { exit $visualSmokeExitCode }
+    if (-not $visualSmokeText.Contains("VISUAL_SMOKE PASS")) {
+        Write-Host "Godot visual smoke did not report VISUAL_SMOKE PASS."
+        exit 1
+    }
+}
+else {
+    Write-Host "Skipping visual smoke because COT_SKIP_VISUAL_SMOKE=1."
+}

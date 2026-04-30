@@ -11,26 +11,25 @@ Continued from the synced `agent/full-hd-test-ui` branch onto `agent/visual-read
 - `ChartersOfTrade.Godot`: adjusted the Full HD shell so the map remains the primary surface and the sidebar has a fixed, scrollable diagnostics width.
 - `ChartersOfTrade.Godot`: renamed and rewrote UI explanations around `Company Ledger`, `Market Pressure`, `Warehouse Policy`, and `Route Contract` so each explanation points at the working system behind it.
 - `ChartersOfTrade.Godot`: improved map rendering with coastline strokes, terrain bands, subtler labels, a mode banner, and cached terrain lookup for coast drawing.
-- `Tests`: added coherent terrain/world-readability coverage across a 25-seed corpus plus key manual seeds.
-- `Tools`: added `tools/visual-smoke.ps1` for non-headless 1920x1080 render verification.
+- `Tests`: added coherent terrain/world-readability coverage across a 25-seed corpus plus key manual seeds, plus dense/impossible settlement config coverage.
+- `Tools`: added `tools/visual-smoke.ps1` for non-headless 1920x1080 render verification and wired it into `tools/test.ps1` by default.
 - `Docs`: added `ADR-0005-coherent-worldgen-fields.md`.
 
 ## Tests
 
-- `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1`: passed with 23/23 tests and `INTERACTION_SMOKE PASS`.
+- `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1`: passed with 25/25 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`; produced `artifacts/godot-smoke/visual-smoke-20260430-03484600000002.png` at 1920x1080.
 - `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1`: passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
-- `powershell -ExecutionPolicy Bypass -File .\tools\visual-smoke.ps1`: passed and produced `artifacts/godot-smoke/visual-smoke-20260430-03434400000002.png` at 1920x1080.
 
 ## Review Notes
 
-- Simulation/worldgen review found no P0/P1 blockers. Fixed its P2 notes by tying port placement to coast-adjacent terrain, limiting coastal routes to port-to-port edges, replacing settlement fallback with a clear bounded failure, and broadening terrain invariants.
+- Simulation/worldgen review found no P0/P1 blockers. Fixed its P2 notes by tying port placement to coast-adjacent terrain, limiting coastal routes to port-to-port edges, validating impossible settlement counts clearly, filling dense valid configs with unique land cells, and broadening terrain invariants.
 - Godot/integration review found no P0/P1 blockers. Fixed the per-frame terrain dictionary allocation by caching the terrain lookup when the snapshot world changes.
-- The headless smoke render-pixel gap is addressed by adding `tools/visual-smoke.ps1` rather than forcing non-headless Godot into `tools/test.ps1`.
+- The headless smoke render-pixel gap is addressed by adding `tools/visual-smoke.ps1` and running it from `tools/test.ps1` by default; constrained automation can set `COT_SKIP_VISUAL_SMOKE=1`.
 
 ## Risks
 
 - The world generator is now more coherent but still P0 scale; route paths can still be straight-line overlays and are not yet pathfound across terrain.
-- `tools/test.ps1` remains headless and does not prove renderer pixels. Use `tools/visual-smoke.ps1` after visual changes.
+- `tools/test.ps1` now includes non-headless visual smoke by default, so sandboxed Codex sessions may need approval for Godot log and renderer artifact writes.
 - The UI is a systems test harness, not final player-facing art direction.
 
 ## Next Step

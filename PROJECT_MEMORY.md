@@ -29,7 +29,7 @@ Build the next P0 vertical-slice layer as a player-facing test harness: `agent/v
 - `tools/test.ps1` uses the normal solution build plus the Godot interaction smoke scene. The separate Godot `--build-solutions --quit` step was removed because it hung and produced a Godot crash dialog in this workspace.
 - Cross-agent branch status: `origin/agent/visual-ux-map-modes` commit `ac44fb6` has been merged into the route-contract work. The integrated Godot UI now uses typed `AvailableContracts`, `SelectedContractId`, and `SelectRouteContract` instead of the visual branch's temporary reflection/placeholder bridge path.
 - World generation version `0.2.0` uses deterministic coherent terrain fields with border water, readable landmass/coastlines, explicit settlement spacing, coastal ports placed on coast-adjacent land, and coastal route mode only between two ports.
-- `tools/test.ps1` remains headless for automation stability; use `tools/visual-smoke.ps1` when a phase needs actual Full HD renderer verification and screenshot output.
+- `tools/test.ps1` runs the normal build, console tests, headless Godot interaction smoke, and non-headless `tools/visual-smoke.ps1` Full HD render verification by default; set `COT_SKIP_VISUAL_SMOKE=1` only for constrained automation.
 
 ## System State
 
@@ -42,7 +42,7 @@ Build the next P0 vertical-slice layer as a player-facing test harness: `agent/v
 - `Content.Core`: JSON content loader, validation, and canonical content hash for P0 resources/recipes.
 - `GodotBridge`: dependency-free bridge facade plus `PrototypeSession`, which runs a deterministic P0 loop across content, world, economy, logistics, route contracts, city growth, AI, persistence hashing, per-city market pressure signals, and lightweight warehouse policy signals.
 - `ChartersOfTrade.Godot`: Godot .NET project with a `Main.tscn` prototype shell driven by `BootstrapPanel.cs`; it renders coherent terrain, coastline highlights, settlement nodes, route lines, KPI metrics, city summary, ledger, tick controls, city/route selection, hover states, route cash labels, animated route pulses, supply rings, route/city warning marks, city type stamps, Routes/Profit/Demand map modes, polished route contract controls, market pressure, warehouse policy signals, and a contextual inspector. `InteractionSmoke.tscn` loads the real scene and exercises expected user actions headlessly.
-- `Tests`: custom console test runner for determinism, terrain-sensitive world hashes, coherent world readability invariants, content validation, prototype ticks, route contracts, declared consumption, save validation, save/load, economy, AI, and Godot interaction smoke; latest Windows run passed 23/23 plus `INTERACTION_SMOKE PASS`.
+- `Tests`: custom console test runner for determinism, terrain-sensitive world hashes, coherent world readability invariants, dense settlement configs, content validation, prototype ticks, route contracts, declared consumption, save validation, save/load, economy, AI, and Godot interaction smoke; latest Windows run passed 25/25 plus `INTERACTION_SMOKE PASS` and `VISUAL_SMOKE PASS`.
 - `Benchmarks`: console runner reporting seed-level playability metrics plus time-to-profit, bankruptcy frequency, post-run cash, AI move, and unmet demand.
 
 ## Changed Areas
@@ -87,7 +87,7 @@ Build the next P0 vertical-slice layer as a player-facing test harness: `agent/v
 - Full HD test UI pass started on `agent/full-hd-test-ui` from synced `agent/logistics-warehouse-policies`: Godot project viewport is now 1920x1080 with canvas-item stretch, the prototype shell uses responsive layout profiles and a scrollable sidebar, and the sidebar includes a System Test Bench with seed reset, Run 12, and a live system probe.
 - Visual readability pass started on `agent/visual-readability-pass` from synced `agent/full-hd-test-ui`: GPT Image produced a UI direction mockup; `BootstrapPanel.cs` now gives the map a fixed primary share of Full HD, labels explanations by working systems (`Company Ledger`, `Market Pressure`, `Warehouse Policy`, `Route Contract`), caches terrain lookup for coast rendering, and uses cleaner route/city labels for visual testing.
 - World generation now uses coherent deterministic value-noise terrain fields, records `WorldGenVersion` `0.2.0`, enforces readable settlement spacing for P0 configs, places ports only on coast-adjacent land, and limits coastal route mode to port-to-port edges.
-- Added `ADR-0005-coherent-worldgen-fields.md` and `tools/visual-smoke.ps1` for explicit non-headless Full HD render verification.
+- Added `ADR-0005-coherent-worldgen-fields.md`; `tools/visual-smoke.ps1` now provides non-headless Full HD render verification and is called by `tools/test.ps1` unless `COT_SKIP_VISUAL_SMOKE=1`.
 
 ## Tests
 
@@ -101,7 +101,7 @@ Build the next P0 vertical-slice layer as a player-facing test harness: `agent/v
 - Economy depth branch verification: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 20/20 tests and `INTERACTION_SMOKE PASS`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.6967, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 - Logistics/warehouse policy branch verification: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 22/22 tests and `INTERACTION_SMOKE PASS`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7055, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 - Full HD test UI verification: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 22/22 tests and `INTERACTION_SMOKE PASS` at tick 18; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7055, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks. Godot movie writer produced a confirmed 1920x1080 control frame at `artifacts/godot-smoke/full-hd-test-ui00000035.png`.
-- Visual readability verification: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 23/23 tests and `INTERACTION_SMOKE PASS`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks; `powershell -ExecutionPolicy Bypass -File .\tools\visual-smoke.ps1` passed and produced a confirmed 1920x1080 frame at `artifacts/godot-smoke/visual-smoke-20260430-03434400000002.png`.
+- Visual readability verification after review fixes: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 25/25 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-03483900000002.png`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 
 ## Risks
 
@@ -115,7 +115,7 @@ Build the next P0 vertical-slice layer as a player-facing test harness: `agent/v
 - `PrototypeSession` is a vertical-slice coordinator; if it grows much more, split stable logic into a proper simulation orchestration project.
 - `tools/test.ps1` now includes Godot interaction smoke and may need the same elevated filesystem access in sandboxed Codex sessions.
 - The visual map still redraws every frame for route pulse animation; terrain lookup is cached, but larger maps should cache static render layers before scale increases.
-- `tools/test.ps1` uses headless Godot and therefore checks UI interaction/text but not real renderer pixels; run `tools/visual-smoke.ps1` after visual UI/map changes.
+- `tools/test.ps1` now includes non-headless visual smoke by default, so sandboxed Codex sessions may need approval for Godot log and renderer artifact writes.
 - Parallel external collaboration now has a GitHub remote, but agents still need branch discipline to avoid overlapping edits.
 - `SaveGame.PendingRouteContractId` is a prototype save v1 extension; future save migrations should formalize command/contract state.
 - Godot `--build-solutions --quit` can hang/crash in this workspace; do not re-add it to the test script unless the underlying Godot CLI issue is understood.
@@ -123,4 +123,4 @@ Build the next P0 vertical-slice layer as a player-facing test harness: `agent/v
 
 ## Next Step
 
-Use the improved visual harness and `tools/visual-smoke.ps1` to manually exercise economy/logistics/city behavior, then continue with explicit warehouse automation controls: reorder toggles, reserve sliders, and route-level reservation policies in the Godot prototype.
+Use the improved visual harness to manually exercise economy/logistics/city behavior, then continue with explicit warehouse automation controls: reorder toggles, reserve sliders, and route-level reservation policies in the Godot prototype.
