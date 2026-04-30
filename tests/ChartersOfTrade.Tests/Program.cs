@@ -23,6 +23,8 @@ var tests = new (string Name, Action Run)[]
     ("prototype route contract rejects invalid ids", PrototypeRouteContractRejectsInvalidIds),
     ("prototype selected route contract stays deterministic", PrototypeSelectedRouteContractStaysDeterministic),
     ("prototype consumption uses declared market needs", PrototypeConsumptionUsesDeclaredMarketNeeds),
+    ("economy prices respond to stock pressure", EconomyPricesRespondToStockPressure),
+    ("prototype exposes local market pressure signals", PrototypeExposesLocalMarketPressureSignals),
     ("economy production never creates negative stock", EconomyProductionNeverCreatesNegativeStock),
     ("save-load-save preserves hash", SaveLoadSavePreservesHash),
     ("save load rejects negative stock", SaveLoadRejectsNegativeStock),
@@ -140,6 +142,31 @@ static void EconomyProductionNeverCreatesNegativeStock()
     AssertTrue(results.Any(result => result.RecipeId == "bake_bread" && result.Produced), "Bread recipe should produce.");
     AssertTrue(results.Any(result => result.RecipeId == "forge_tools" && !result.Produced), "Tools recipe should fail without inputs.");
     AssertTrue(inventory.Stock.Values.All(amount => amount >= 0), "Inventory contains a negative stock value.");
+}
+
+static void EconomyPricesRespondToStockPressure()
+{
+    var grain = new ResourceDef("grain", "staple", ["food"], 10m, 1.0, 0, []);
+    var needs = new[] { new MarketNeed("grain", 10, 2) };
+    var economy = new EconomyTick();
+
+    var stockout = economy.CalculatePrices([grain], new Inventory(new Dictionary<string, int> { ["grain"] = 0 }), needs).Single();
+    var balanced = economy.CalculatePrices([grain], new Inventory(new Dictionary<string, int> { ["grain"] = 10 }), needs).Single();
+    var surplus = economy.CalculatePrices([grain], new Inventory(new Dictionary<string, int> { ["grain"] = 24 }), needs).Single();
+
+    AssertTrue(stockout.Price > balanced.Price, "Stockout should price above balanced stock.");
+    AssertTrue(surplus.Price < balanced.Price, "Surplus should price below balanced stock.");
+    AssertTrue(stockout.Scarcity > balanced.Scarcity && balanced.Scarcity > surplus.Scarcity, "Scarcity should follow local stock pressure.");
+}
+
+static void PrototypeExposesLocalMarketPressureSignals()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(424242);
+    var snapshot = session.Current;
+
+    AssertTrue(snapshot.Cities.All(city => city.MarketSignals.Count > 0), "Expected every city to expose market pressure signals.");
+    AssertTrue(snapshot.Cities.Any(city => city.MarketSignals.Any(signal => signal.WarehouseStock > 0)), "Expected signals to include company warehouse stock.");
+    AssertTrue(snapshot.Cities.Any(city => city.MarketSignals.Any(signal => signal.Reason.Contains("short", StringComparison.Ordinal) || signal.Reason.Contains("stockout", StringComparison.Ordinal))), "Expected at least one visible shortage reason.");
 }
 
 static void P0ContentLoadsAndValidates()
