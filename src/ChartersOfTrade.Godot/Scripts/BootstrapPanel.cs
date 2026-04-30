@@ -524,8 +524,6 @@ public partial class BootstrapPanel : Control
             .ToArray();
         var cityContracts = _snapshot.AvailableContracts
             .Where(contract => contract.FromNode == city.Id || contract.ToNode == city.Id)
-            .OrderByDescending(contract => contract.ExpectedNet)
-            .ThenBy(contract => contract.Id, StringComparer.Ordinal)
             .ToArray();
 
         _inspector.AppendText($"{city.Name} ({CityKindLabel(CityKindFor(city.Id))})\n");
@@ -571,8 +569,6 @@ public partial class BootstrapPanel : Control
         var routeDemand = RouteDemandSignal(route);
         var routeContracts = _snapshot.AvailableContracts
             .Where(contract => contract.RouteId == route.Id)
-            .OrderByDescending(contract => contract.ExpectedNet)
-            .ThenBy(contract => contract.Id, StringComparer.Ordinal)
             .ToArray();
         var selectedContract = SelectedContract();
         var selectedRouteContract = selectedContract is not null && selectedContract.RouteId == route.Id
@@ -1001,8 +997,6 @@ public partial class BootstrapPanel : Control
 
         _visibleContracts = _snapshot.AvailableContracts
             .Where(ContractAppliesToCurrentSelection)
-            .OrderByDescending(contract => contract.ExpectedNet)
-            .ThenBy(contract => contract.Id, StringComparer.Ordinal)
             .ToArray();
 
         var invalidContractId = _invalidContractId;
@@ -1286,7 +1280,8 @@ public partial class BootstrapPanel : Control
     {
         return city.MarketSignals
             .Where(signal => signal.DesiredStock > 0 && signal.Scarcity > 0.10)
-            .OrderByDescending(signal => signal.Scarcity)
+            .OrderByDescending(signal => signal.ShipmentPriority)
+            .ThenByDescending(signal => signal.Scarcity)
             .ThenBy(signal => signal.ResourceId, StringComparer.Ordinal)
             .FirstOrDefault();
     }
