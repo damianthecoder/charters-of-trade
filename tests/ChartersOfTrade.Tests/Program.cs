@@ -25,6 +25,10 @@ var tests = new (string Name, Action Run)[]
     ("prototype route contract selection affects logistics", PrototypeRouteContractSelectionAffectsLogistics),
     ("prototype route contract rejects invalid ids", PrototypeRouteContractRejectsInvalidIds),
     ("prototype selected route contract stays deterministic", PrototypeSelectedRouteContractStaysDeterministic),
+    ("prototype route policy hash is deterministic", PrototypeRoutePolicyHashIsDeterministic),
+    ("prototype route resource reservation filters contracts", PrototypeRouteResourceReservationFiltersContracts),
+    ("prototype route priority boosts contract ordering", PrototypeRoutePriorityBoostsContractOrdering),
+    ("prototype route policy invalid targets are no-ops", PrototypeRoutePolicyInvalidTargetsAreNoOps),
     ("prototype consumption uses declared market needs", PrototypeConsumptionUsesDeclaredMarketNeeds),
     ("economy prices respond to stock pressure", EconomyPricesRespondToStockPressure),
     ("prototype exposes local market pressure signals", PrototypeExposesLocalMarketPressureSignals),
@@ -37,6 +41,7 @@ var tests = new (string Name, Action Run)[]
     ("economy production never creates negative stock", EconomyProductionNeverCreatesNegativeStock),
     ("save-load-save preserves hash", SaveLoadSavePreservesHash),
     ("warehouse policy save-load preserves hash", WarehousePolicySaveLoadPreservesHash),
+    ("route policy save validation rejects orphan priority", RoutePolicySaveValidationRejectsOrphanPriority),
     ("save load rejects negative stock", SaveLoadRejectsNegativeStock),
     ("AI chooses the highest utility opportunity", AiChoosesHighestUtilityOpportunity)
 };
@@ -497,6 +502,104 @@ static void PrototypeSelectedRouteContractStaysDeterministic()
     AssertEqual(ContractFingerprint(first.Current.AvailableContracts), ContractFingerprint(second.Current.AvailableContracts));
 }
 
+static void PrototypeRoutePolicyHashIsDeterministic()
+{
+    var bridge = new SimulationBridge();
+    var first = bridge.CreatePrototypeSession(20260429);
+    var second = bridge.CreatePrototypeSession(20260429);
+    var route = first.Current.AvailableContracts
+        .GroupBy(contract => contract.RouteId)
+        .First(group => group.Select(contract => contract.ResourceId).Distinct(StringComparer.Ordinal).Count() > 1);
+    var removedResource = route.First().ResourceId;
+    var priorityResource = route.First(contract => contract.ResourceId != removedResource).ResourceId;
+
+    AssertTrue(first.SetRouteResourceReservation(route.Key, removedResource, false), "Expected first route reservation update to succeed.");
+    AssertTrue(second.SetRouteResourceReservation(route.Key, removedResource, false), "Expected second route reservation update to succeed.");
+    AssertTrue(first.SetRoutePriorityResource(route.Key, priorityResource), "Expected first route priority update to succeed.");
+    AssertTrue(second.SetRoutePriorityResource(route.Key, priorityResource), "Expected second route priority update to succeed.");
+
+    for (var i = 0; i < 4; i++)
+    {
+        first.AdvanceTick();
+        second.AdvanceTick();
+    }
+
+    AssertEqual(first.Current.SaveHash, second.Current.SaveHash);
+    AssertEqual(RoutePolicyFingerprint(first.Current), RoutePolicyFingerprint(second.Current));
+    AssertEqual(ContractFingerprint(first.Current.AvailableContracts), ContractFingerprint(second.Current.AvailableContracts));
+}
+
+static void PrototypeRouteResourceReservationFiltersContracts()
+{
+    var bridge = new SimulationBridge();
+    var baseline = bridge.CreatePrototypeSession(20260429);
+    var baselineInitial = baseline.Current;
+    var baselineTick = baseline.AdvanceTick();
+    var baselineDelivery = baselineTick.Ledger
+        .Where(entry => entry.Tick == baselineTick.Tick && entry.Category == "Logistics")
+        .Select(entry => new
+        {
+            Entry = entry,
+            Contract = baselineInitial.AvailableContracts.FirstOrDefault(contract =>
+                contract.RouteId == entry.RelatedId
+                && entry.Message.Contains(contract.ResourceId, StringComparison.Ordinal))
+        })
+        .First(item => item.Contract is not null);
+    var routeId = baselineDelivery.Contract!.RouteId;
+    var removedResource = baselineDelivery.Contract.ResourceId;
+
+    var session = bridge.CreatePrototypeSession(20260429);
+    var initialHash = session.Current.SaveHash;
+
+    AssertTrue(session.SetRouteResourceReservation(routeId, removedResource, false), "Expected route reservation update to accept a valid route/resource.");
+    AssertTrue(session.Current.SaveHash != initialHash, "Route reservation should change the deterministic state hash.");
+    AssertTrue(session.Current.RoutePolicies.Single(policy => policy.RouteId == routeId).ReservedResources.All(resource => resource != removedResource), "Route policy view should show the resource as unreserved.");
+    AssertTrue(session.Current.AvailableContracts.All(contract => contract.RouteId != routeId || contract.ResourceId != removedResource), "Unreserved route resource should be filtered from available contracts.");
+
+    var tick = session.AdvanceTick();
+    AssertTrue(!tick.Ledger.Any(entry => entry.Tick == tick.Tick
+        && entry.Category == "Logistics"
+        && entry.RelatedId == routeId
+        && entry.Message.Contains(removedResource, StringComparison.Ordinal)), "Automatic logistics should not ship an unreserved resource on that route.");
+}
+
+static void PrototypeRoutePriorityBoostsContractOrdering()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(20260429);
+    var group = session.Current.AvailableContracts
+        .GroupBy(contract => contract.RouteId)
+        .First(item => item.Select(contract => contract.ResourceId).Distinct(StringComparer.Ordinal).Count() > 1);
+    var target = group.Last();
+    var oldPriority = target.ShipmentPriority;
+
+    AssertTrue(session.SetRoutePriorityResource(group.Key, target.ResourceId), "Expected route priority update to accept a valid route/resource.");
+    var updatedGroup = session.Current.AvailableContracts.Where(contract => contract.RouteId == group.Key).ToArray();
+    var updatedTarget = updatedGroup.Single(contract => contract.ResourceId == target.ResourceId);
+
+    AssertEqual(target.ResourceId, updatedGroup[0].ResourceId);
+    AssertTrue(updatedTarget.ShipmentPriority > oldPriority, "Route priority should boost the target contract.");
+    AssertTrue(updatedTarget.PolicyAction.Contains("route priority", StringComparison.Ordinal), "Prioritized contract should expose route priority in its action text.");
+}
+
+static void PrototypeRoutePolicyInvalidTargetsAreNoOps()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(424242);
+    var routeId = session.Current.Routes[0].Id;
+    var resourceId = session.Current.RoutePolicies[0].ReservedResources[0];
+    var initialTick = session.Current.Tick;
+    var initialHash = session.Current.SaveHash;
+    var initialPolicies = RoutePolicyFingerprint(session.Current);
+
+    AssertTrue(!session.SetRouteResourceReservation("missing-route", resourceId, false), "Expected unknown route id to be rejected.");
+    AssertTrue(!session.SetRouteResourceReservation(routeId, "missing-resource", false), "Expected unknown resource id to be rejected.");
+    AssertTrue(!session.SetRoutePriorityResource("missing-route", resourceId), "Expected unknown route priority target to be rejected.");
+    AssertTrue(!session.SetRoutePriorityResource(routeId, "missing-resource"), "Expected unknown priority resource to be rejected.");
+
+    AssertEqual(initialTick, session.Current.Tick);
+    AssertEqual(initialHash, session.Current.SaveHash);
+    AssertEqual(initialPolicies, RoutePolicyFingerprint(session.Current));
+}
+
 static void PrototypeConsumptionUsesDeclaredMarketNeeds()
 {
     var market = new Inventory(new Dictionary<string, int> { ["grain"] = 5, ["wood"] = 1, ["tools"] = 0 });
@@ -522,7 +625,7 @@ static void SaveLoadSavePreservesHash()
     var market = StarterScenarioFactory.CreateInitialMarket(content.Resources);
     var needs = StarterScenarioFactory.CreateNeeds(content.Resources);
     var prices = new EconomyTick().CalculatePrices(content.Resources, market, needs);
-    var save = StarterSaveFactory.Create(424242, snapshot.World.WorldGenVersion, content.ContentHash, snapshot.World.Nodes, routes, market, prices);
+    var save = StarterSaveFactory.Create(424242, snapshot.World.WorldGenVersion, content.ContentHash, snapshot.World.Nodes, routes, content.Resources, market, prices);
     var firstHash = SaveCodec.ComputeStateHash(save);
     var json = SaveCodec.Serialize(save);
     var loaded = SaveCodec.Deserialize(json);
@@ -538,7 +641,7 @@ static void WarehousePolicySaveLoadPreservesHash()
     var routes = RoutePlanner.FromWorld(snapshot.World);
     var market = StarterScenarioFactory.CreateInitialMarket(content.Resources);
     var prices = new EconomyTick().CalculatePrices(content.Resources, market, StarterScenarioFactory.CreateNeeds(content.Resources));
-    var save = StarterSaveFactory.Create(424242, snapshot.World.WorldGenVersion, content.ContentHash, snapshot.World.Nodes, routes, market, prices) with
+    var save = StarterSaveFactory.Create(424242, snapshot.World.WorldGenVersion, content.ContentHash, snapshot.World.Nodes, routes, content.Resources, market, prices) with
     {
         WarehousePolicies =
         [
@@ -564,6 +667,62 @@ static void WarehousePolicySaveLoadPreservesHash()
     }
 }
 
+static void RoutePolicySaveValidationRejectsOrphanPriority()
+{
+    var content = GameContentLoader.LoadFromDirectory(ContentPathResolver.FindContentDirectory());
+    var snapshot = new SimulationBridge().CreateNewGame(424242);
+    var routes = RoutePlanner.FromWorld(snapshot.World);
+    var market = StarterScenarioFactory.CreateInitialMarket(content.Resources);
+    var prices = new EconomyTick().CalculatePrices(content.Resources, market, StarterScenarioFactory.CreateNeeds(content.Resources));
+    var save = StarterSaveFactory.Create(424242, snapshot.World.WorldGenVersion, content.ContentHash, snapshot.World.Nodes, routes, content.Resources, market, prices);
+    var invalid = save with
+    {
+        RoutePolicies =
+        [
+            new RoutePolicySaveState(save.Routes[0].Id, [], "grain")
+        ]
+    };
+
+    try
+    {
+        SaveCodec.Serialize(invalid);
+        throw new InvalidOperationException("Expected save validation to reject an orphan route priority.");
+    }
+    catch (SaveValidationException ex)
+    {
+        AssertTrue(ex.Errors.Any(error => error.Contains("priorityResourceId must be one of reservedResources", StringComparison.Ordinal)), "Expected orphan route priority validation error.");
+    }
+
+    var missingPolicy = save with { RoutePolicies = save.RoutePolicies.Skip(1).ToArray() };
+    try
+    {
+        SaveCodec.Serialize(missingPolicy);
+        throw new InvalidOperationException("Expected save validation to reject missing route policy state.");
+    }
+    catch (SaveValidationException ex)
+    {
+        AssertTrue(ex.Errors.Any(error => error.Contains("must be present for every saved route", StringComparison.Ordinal)), "Expected missing route policy validation error.");
+    }
+
+    var unknownResource = save with
+    {
+        RoutePolicies =
+        [
+            save.RoutePolicies[0] with { ReservedResources = ["not-a-route-resource"] },
+            .. save.RoutePolicies.Skip(1)
+        ]
+    };
+    try
+    {
+        SaveCodec.Serialize(unknownResource);
+        throw new InvalidOperationException("Expected save validation to reject unknown route policy resources.");
+    }
+    catch (SaveValidationException ex)
+    {
+        AssertTrue(ex.Errors.Any(error => error.Contains("must be listed in the saved route reservedFor resources", StringComparison.Ordinal)), "Expected unknown route policy resource validation error.");
+    }
+}
+
 static void SaveLoadRejectsNegativeStock()
 {
     var content = GameContentLoader.LoadFromDirectory(ContentPathResolver.FindContentDirectory());
@@ -571,7 +730,7 @@ static void SaveLoadRejectsNegativeStock()
     var routes = RoutePlanner.FromWorld(snapshot.World);
     var market = StarterScenarioFactory.CreateInitialMarket(content.Resources);
     var prices = new EconomyTick().CalculatePrices(content.Resources, market, StarterScenarioFactory.CreateNeeds(content.Resources));
-    var save = StarterSaveFactory.Create(424242, snapshot.World.WorldGenVersion, content.ContentHash, snapshot.World.Nodes, routes, market, prices);
+    var save = StarterSaveFactory.Create(424242, snapshot.World.WorldGenVersion, content.ContentHash, snapshot.World.Nodes, routes, content.Resources, market, prices);
     var invalid = save with
     {
         Cities =
@@ -700,4 +859,17 @@ static string PolicyFingerprint(PrototypeSnapshot snapshot)
                 signal.ReorderPoint,
                 signal.IsPolicyOverridden,
                 signal.ShipmentPriority))));
+}
+
+static string RoutePolicyFingerprint(PrototypeSnapshot snapshot)
+{
+    return string.Join("|", snapshot.RoutePolicies
+        .OrderBy(policy => policy.RouteId, StringComparer.Ordinal)
+        .Select(policy =>
+            string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}:{1}:{2}",
+                policy.RouteId,
+                string.Join(",", policy.ReservedResources.Order(StringComparer.Ordinal)),
+                policy.PriorityResourceId ?? "")));
 }

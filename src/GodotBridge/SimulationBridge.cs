@@ -31,7 +31,7 @@ public sealed class SimulationBridge
         var needs = StarterScenarioFactory.CreateNeeds(content.Resources);
         var prices = new EconomyTick().CalculatePrices(content.Resources, market, needs);
 
-        var save = StarterSaveFactory.Create(seed, world.WorldGenVersion, content.ContentHash, world.Nodes, routes, market, prices);
+        var save = StarterSaveFactory.Create(seed, world.WorldGenVersion, content.ContentHash, world.Nodes, routes, content.Resources, market, prices);
         return new NewGameSnapshot(world, content.ContentHash, routes, prices, SaveCodec.ComputeStateHash(save));
     }
 
@@ -147,6 +147,7 @@ public static class StarterSaveFactory
         string contentHash,
         IReadOnlyList<WorldNode> nodes,
         IReadOnlyList<TradeRoute> routes,
+        IReadOnlyList<ResourceDef> resources,
         Inventory initialMarket,
         IReadOnlyList<MarketPrice> initialPrices)
     {
@@ -160,11 +161,9 @@ public static class StarterSaveFactory
             initialMarket.Stock.Where(kvp => kvp.Value > 0).Take(3).ToDictionary(kvp => kvp.Key, kvp => Math.Max(1, kvp.Value / 2), StringComparer.Ordinal),
             priceState);
 
-        var reserved = initialMarket.Stock
-            .Where(kvp => kvp.Value > 0)
-            .Select(kvp => kvp.Key)
+        var routePolicyResources = StarterScenarioFactory.CreateNeeds(resources)
+            .Select(need => need.ResourceId)
             .Order(StringComparer.Ordinal)
-            .Take(4)
             .ToArray();
 
         return new SaveGame(
@@ -176,10 +175,11 @@ public static class StarterSaveFactory
             new CalendarState(1, 1),
             new CompanyState(1000m, 0m, 50, "merchant_league"),
             [city],
-            routes.Select(route => new RouteSaveState(route.Id, route.FromNode, route.ToNode, route.Mode, route.CapacityPerDay, reserved)).ToArray(),
+            routes.Select(route => new RouteSaveState(route.Id, route.FromNode, route.ToNode, route.Mode, route.CapacityPerDay, routePolicyResources)).ToArray(),
             [],
             new FogOfWarState(nodes.Take(3).Select(node => node.Id).ToArray()),
             [],
+            routes.Select(route => new RoutePolicySaveState(route.Id, routePolicyResources, null)).ToArray(),
             null);
     }
 }

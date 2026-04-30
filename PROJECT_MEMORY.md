@@ -2,7 +2,7 @@
 
 ## Current Goal
 
-Build the next P0 vertical-slice layer as a player-facing gameplay-control harness: `agent/warehouse-control-loop` starts from synced `main` after the graphic polish merge and adds the first controllable warehouse policy loop. The current pass lets the player select a city, adjust safety stock and reorder point for a resource, persist that policy in save state, and see route contract priorities/export availability react deterministically.
+Build the next P0 vertical-slice layer as a player-facing gameplay-control harness: `agent/warehouse-controls-integration` continues from verified `agent/warehouse-control-loop` and reconciles warehouse policy, route policy, Godot UI, smoke, visual QA, and save v2 state into one branch.
 
 ## Latest Decisions
 
@@ -28,6 +28,8 @@ Build the next P0 vertical-slice layer as a player-facing gameplay-control harne
 - Each development phase starts by syncing local `main` from `origin/main`, creating a focused feature branch, and ends by running verification, committing, pushing to GitHub, and confirming the remote branch head.
 - Route contract selection is gameplay state, not transient UI state. Pending selected contracts are included in `SaveGame.PendingRouteContractId` and therefore in the state hash.
 - Warehouse policy overrides are gameplay state, not transient UI state. `SaveGame.WarehousePolicies` records city/resource safety stock and reorder point overrides in save version 2, and those overrides affect market signals, export availability, route contract priority, and state hashes.
+- Route policy controls are gameplay state, not transient UI state. `SaveGame.RoutePolicies` records per-route reserved resources and optional priority resource in save version 2; route policies filter route contracts/logistics candidates, influence deterministic ordering, and affect state hashes.
+- Route policies must be present for every saved route. Their resource lists are constrained to the route's saved `reservedFor` resources, and default route policy resources come from declared market needs rather than incidental starter inventory.
 - `tools/test.ps1` uses the normal solution build plus the Godot interaction smoke scene. The separate Godot `--build-solutions --quit` step was removed because it hung and produced a Godot crash dialog in this workspace.
 - Cross-agent branch status: `origin/agent/visual-ux-map-modes` commit `ac44fb6` has been merged into the route-contract work. The integrated Godot UI now uses typed `AvailableContracts`, `SelectedContractId`, and `SelectRouteContract` instead of the visual branch's temporary reflection/placeholder bridge path.
 - World generation version `0.2.0` uses deterministic coherent terrain fields with border water, readable landmass/coastlines, explicit settlement spacing, coastal ports placed on coast-adjacent land, and coastal route mode only between two ports.
@@ -40,11 +42,11 @@ Build the next P0 vertical-slice layer as a player-facing gameplay-control harne
 - `Logistics.Core`: routes, capacities, lead time, route profitability.
 - `CitySim.Core`: cohort population, city stock, workforce, simple growth signals.
 - `AI.Company`: utility scorer for expansion/trade opportunities.
-- `Persistence.Core`: save game DTOs, JSON serialization, save validation, stable state hash, pending route contract id support, save version 2, and persisted warehouse policy overrides.
+- `Persistence.Core`: save game DTOs, JSON serialization, save validation, stable state hash, pending route contract id support, save version 2, persisted warehouse policy overrides, and persisted route policy controls.
 - `Content.Core`: JSON content loader, validation, and canonical content hash for P0 resources/recipes.
-- `GodotBridge`: dependency-free bridge facade plus `PrototypeSession`, which runs a deterministic P0 loop across content, world, economy, logistics, route contracts, city growth, AI, persistence hashing, per-city market pressure signals, and controllable warehouse policy overrides through `SetWarehousePolicy`.
-- `ChartersOfTrade.Godot`: Godot .NET project with a `Main.tscn` prototype shell driven by `BootstrapPanel.cs`; it renders coherent terrain, coastline highlights, terrain texture marks, settlement nodes, route lines/arrows, top map HUD, left map-mode rail, KPI metrics, city summary, ledger, tick controls, city/route selection, hover states, collision-aware map labels, route cash labels, animated route pulses, supply rings, route/city warning marks, city type stamps, Routes/Profit/Demand map modes, polished route contract controls, market pressure, warehouse policy controls, sectioned sidebar panels, and a contextual inspector. `InteractionSmoke.tscn` loads the real scene and exercises expected user actions headlessly.
-- `Tests`: custom console test runner for determinism, terrain-sensitive world hashes, coherent world readability invariants, dense settlement configs, content validation, prototype ticks, route contracts, warehouse policy overrides, declared consumption, save validation, save/load, economy, AI, and Godot interaction smoke; latest Windows run passed 30/30 plus `INTERACTION_SMOKE PASS` and `VISUAL_SMOKE PASS`.
+- `GodotBridge`: dependency-free bridge facade plus `PrototypeSession`, which runs a deterministic P0 loop across content, world, economy, logistics, route contracts, city growth, AI, persistence hashing, per-city market pressure signals, controllable warehouse policy overrides, and route resource reservation/priority controls.
+- `ChartersOfTrade.Godot`: Godot .NET project with a `Main.tscn` prototype shell driven by `BootstrapPanel.cs`; it renders coherent terrain, coastline highlights, terrain texture marks, settlement nodes, route lines/arrows, top map HUD, left map-mode rail, KPI metrics, city summary, ledger, tick controls, city/route selection, hover states, collision-aware map labels, route cash labels, animated route pulses, supply rings, route/city warning marks, city type stamps, Routes/Profit/Demand map modes, polished route contract controls, compact route policy controls, market pressure, warehouse policy focus/sort/edit controls, sectioned sidebar panels, and a contextual inspector. `InteractionSmoke.tscn` loads the real scene and exercises expected user actions headlessly; `VisualQa.tscn` captures multi-seed visual QA frames locally.
+- `Tests`: custom console test runner for determinism, terrain-sensitive world hashes, coherent world readability invariants, dense settlement configs, content validation, prototype ticks, route contracts, route policies, warehouse policy overrides, declared consumption, save validation, save/load, economy, AI, and Godot interaction smoke; latest Windows run passed 35/35 plus `INTERACTION_SMOKE PASS` and `VISUAL_SMOKE PASS`.
 - `Benchmarks`: console runner reporting seed-level playability metrics plus time-to-profit, bankruptcy frequency, post-run cash, AI move, and unmet demand.
 
 ## Changed Areas
@@ -93,6 +95,7 @@ Build the next P0 vertical-slice layer as a player-facing gameplay-control harne
 - Graphic polish pass started on `agent/graphic-polish-pass` from synced Full HD work: `BootstrapPanel.cs` now uses sectioned sidebar cards, styled buttons, larger log text, a map title/HUD strip, left map-mode rail, richer deterministic terrain detail, route outlines/arrows, and collision-aware city labels. Review feedback fixed Event Ledger panel sizing, duplicate hover labels, and added a right gutter so the sidebar scrollbar does not crowd text.
 - Warehouse control loop started on `agent/warehouse-control-loop` from synced `main`: `PrototypeSession.SetWarehousePolicy` adds deterministic city/resource safety stock and reorder overrides; `SaveGame` version 2 persists `WarehousePolicies`; market signals expose `IsPolicyOverridden`; route contract priority and export availability read policy overrides; Godot Warehouse Policy controls can apply overrides from the sidebar; interaction smoke now scrolls to and verifies the controls are visible.
 - Added `ADR-0006-warehouse-policy-save-state.md` to record the save v2 policy-state decision.
+- Warehouse controls integration started on `agent/warehouse-controls-integration`: added `RoutePolicySaveState`, `PrototypeRoutePolicyView`, `PrototypeSession.SetRouteResourceReservation`, `PrototypeSession.SetRoutePriorityResource`, deterministic route contract/logistics filtering, route priority boosts, save validation for complete route policies, Godot route policy controls in the Route Contract panel, warehouse policy focus/sort controls, workspace-local `.godot_user` handling for Godot CLI, and `tools/visual-qa.ps1` with `VisualQa.tscn`.
 
 ## Tests
 
@@ -109,6 +112,7 @@ Build the next P0 vertical-slice layer as a player-facing gameplay-control harne
 - Visual readability verification after review fixes: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 25/25 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-03483900000002.png`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 - Graphic polish verification after review fixes and merge with `origin/main`: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 25/25 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-04104500000002.png`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 - Warehouse control loop verification after delegated review fixes: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 30/30 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-04293200000002.png`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
+- Warehouse controls integration verification after delegated review fixes: `git diff --check` passed with only the expected CRLF warning for `tools/godot.ps1`; `powershell -ExecutionPolicy Bypass -File .\tools\build.ps1` passed with 0 warnings and 0 errors; `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 35/35 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-14290800000002.png`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25; `powershell -ExecutionPolicy Bypass -File .\tools\visual-qa.ps1` passed with 12 captures in `artifacts/godot-visual-qa/visual-qa-20260430-142930`.
 
 ## Risks
 
@@ -126,6 +130,7 @@ Build the next P0 vertical-slice layer as a player-facing gameplay-control harne
 - Parallel external collaboration now has a GitHub remote, but agents still need branch discipline to avoid overlapping edits.
 - `SaveGame.PendingRouteContractId` is a prototype save v1 extension; future save migrations should formalize command/contract state.
 - Save version 2 is enforced for warehouse policies but has no legacy migration path yet; add explicit migrations before supporting old saves.
+- Save version 2 now includes route policies as well as warehouse policies; add explicit migrations before supporting old saves.
 - Godot `--build-solutions --quit` can hang/crash in this workspace; do not re-add it to the test script unless the underlying Godot CLI issue is understood.
 - Godot CLI smoke may need to run outside sandboxed Codex sessions because Godot writes editor/runtime logs under `user://`.
 - Map-label placement is still a simple local collision pass; future larger maps may need a dedicated label layout/cache layer.
@@ -133,4 +138,4 @@ Build the next P0 vertical-slice layer as a player-facing gameplay-control harne
 
 ## Next Step
 
-Extend the control loop from policy overrides into route-level reservation controls: reserve units for a selected route contract, expose remaining exportable stock, and show the cashflow/demand effect after ticks.
+Run one manual gameplay QA pass on route blocking/priority across several seeds, then decide whether route policy controls need presets before the next gameplay-system pass.

@@ -38,6 +38,11 @@ public sealed record WarehousePolicySaveState(
     int SafetyStock,
     int ReorderPoint);
 
+public sealed record RoutePolicySaveState(
+    string RouteId,
+    IReadOnlyList<string> ReservedResources,
+    string? PriorityResourceId);
+
 public sealed record SaveGame(
     int SaveVersion,
     string ContentHash,
@@ -51,6 +56,7 @@ public sealed record SaveGame(
     IReadOnlyList<EventSaveState> Events,
     FogOfWarState FogOfWar,
     IReadOnlyList<WarehousePolicySaveState> WarehousePolicies,
+    IReadOnlyList<RoutePolicySaveState> RoutePolicies,
     string? PendingRouteContractId);
 
 public static class SaveCodec
@@ -96,6 +102,13 @@ public static class SaveCodec
             WarehousePolicies = save.WarehousePolicies
                 .OrderBy(policy => policy.CityId, StringComparer.Ordinal)
                 .ThenBy(policy => policy.ResourceId, StringComparer.Ordinal)
+                .ToArray(),
+            RoutePolicies = save.RoutePolicies
+                .Select(policy => policy with
+                {
+                    ReservedResources = policy.ReservedResources.Order(StringComparer.Ordinal).ToArray()
+                })
+                .OrderBy(policy => policy.RouteId, StringComparer.Ordinal)
                 .ToArray(),
             FogOfWar = save.FogOfWar with
             {
@@ -152,11 +165,43 @@ public static class SaveValidator
             ValidateCity(city, errors);
         }
 
+        var seenRouteIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (var route in save.Routes)
         {
+            if (string.IsNullOrWhiteSpace(route.Id))
+            {
+                errors.Add("route id must not be empty");
+            }
+            else if (!seenRouteIds.Add(route.Id))
+            {
+                errors.Add($"route '{route.Id}' must not be duplicated");
+            }
+
             if (route.CapacityPerDay <= 0)
             {
                 errors.Add($"route '{route.Id}' capacityPerDay must be positive");
+            }
+
+            if (route.ReservedFor is null)
+            {
+                errors.Add($"route '{route.Id}' reservedFor must not be null");
+            }
+            else
+            {
+                var reservedFor = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var resourceId in route.ReservedFor)
+                {
+                    if (string.IsNullOrWhiteSpace(resourceId))
+                    {
+                        errors.Add($"route '{route.Id}' reservedFor resource id must not be empty");
+                        continue;
+                    }
+
+                    if (!reservedFor.Add(resourceId))
+                    {
+                        errors.Add($"route '{route.Id}' reservedFor resource '{resourceId}' must not be duplicated");
+                    }
+                }
             }
         }
 
@@ -202,6 +247,15 @@ public static class SaveValidator
             }
         }
 
+        if (save.RoutePolicies is null)
+        {
+            errors.Add("routePolicies must not be null");
+        }
+        else
+        {
+            ValidateRoutePolicies(save, errors);
+        }
+
         if (save.PendingRouteContractId is not null && string.IsNullOrWhiteSpace(save.PendingRouteContractId))
         {
             errors.Add("pendingRouteContractId must not be empty when present");
@@ -244,6 +298,81 @@ public static class SaveValidator
             if (amount < 0)
             {
                 errors.Add($"city '{cityId}' {stockName} resource '{resourceId}' must not be negative");
+            }
+        }
+    }
+
+    private static void ValidateRoutePolicies(SaveGame save, List<string> errors)
+    {
+        var routesById = save.Routes
+            .Where(route => !string.IsNullOrWhiteSpace(route.Id))
+            .GroupBy(route => route.Id, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        var knownRouteIds = routesById.Keys.ToHashSet(StringComparer.Ordinal);
+        var seenRoutes = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var policy in save.RoutePolicies)
+        {
+            RouteSaveState? savedRoute = null;
+            if (string.IsNullOrWhiteSpace(policy.RouteId))
+            {
+                errors.Add("route policy routeId must not be empty");
+            }
+            else if (!routesById.TryGetValue(policy.RouteId, out savedRoute))
+            {
+                errors.Add($"route policy '{policy.RouteId}' must reference a saved route");
+            }
+
+            if (!seenRoutes.Add(policy.RouteId))
+            {
+                errors.Add($"route policy '{policy.RouteId}' must not be duplicated");
+            }
+
+            if (policy.ReservedResources is null)
+            {
+                errors.Add($"route policy '{policy.RouteId}' reservedResources must not be null");
+                continue;
+            }
+
+            var reservedResources = new HashSet<string>(StringComparer.Ordinal);
+            var validRouteResources = savedRoute?.ReservedFor is null
+                ? new HashSet<string>(StringComparer.Ordinal)
+                : savedRoute.ReservedFor.ToHashSet(StringComparer.Ordinal);
+            foreach (var resourceId in policy.ReservedResources)
+            {
+                if (string.IsNullOrWhiteSpace(resourceId))
+                {
+                    errors.Add($"route policy '{policy.RouteId}' reserved resource id must not be empty");
+                    continue;
+                }
+
+                if (!reservedResources.Add(resourceId))
+                {
+                    errors.Add($"route policy '{policy.RouteId}' reserved resource '{resourceId}' must not be duplicated");
+                }
+
+                if (savedRoute is not null && !validRouteResources.Contains(resourceId))
+                {
+                    errors.Add($"route policy '{policy.RouteId}' reserved resource '{resourceId}' must be listed in the saved route reservedFor resources");
+                }
+            }
+
+            if (policy.PriorityResourceId is not null && string.IsNullOrWhiteSpace(policy.PriorityResourceId))
+            {
+                errors.Add($"route policy '{policy.RouteId}' priorityResourceId must not be empty when present");
+            }
+
+            if (policy.PriorityResourceId is not null && !reservedResources.Contains(policy.PriorityResourceId))
+            {
+                errors.Add($"route policy '{policy.RouteId}' priorityResourceId must be one of reservedResources");
+            }
+        }
+
+        foreach (var routeId in knownRouteIds.Order(StringComparer.Ordinal))
+        {
+            if (!seenRoutes.Contains(routeId))
+            {
+                errors.Add($"route policy '{routeId}' must be present for every saved route");
             }
         }
     }

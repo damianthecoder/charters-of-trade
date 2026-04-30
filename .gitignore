@@ -2,6 +2,7 @@
 .nuget_packages/
 .nuget_http_cache/
 .godot/
+.godot_user/
 .vs/
 .vscode/
 bin/
