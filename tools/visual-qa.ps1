@@ -12,7 +12,7 @@ New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 
 $env:COT_VISUAL_QA_DIR = $outDir
 try {
-    $output = & (Join-Path $PSScriptRoot "godot.ps1") --path .\src\ChartersOfTrade.Godot --scene res://scenes/VisualQa.tscn --quit-after 90 2>&1
+    $output = & (Join-Path $PSScriptRoot "godot.ps1") --path .\src\ChartersOfTrade.Godot --scene res://scenes/VisualQa.tscn --quit-after 180 2>&1
     $exitCode = $LASTEXITCODE
 }
 finally {
@@ -28,8 +28,8 @@ if (-not $text.Contains("VISUAL_QA PASS")) {
 }
 
 $frames = Get-ChildItem -Path $outDir -Filter "*.png" | Sort-Object Name
-if ($frames.Count -ne 12) {
-    Write-Host "Visual QA expected 12 PNG captures, got $($frames.Count)."
+if ($frames.Count -ne 15) {
+    Write-Host "Visual QA expected 15 PNG captures, got $($frames.Count)."
     exit 1
 }
 

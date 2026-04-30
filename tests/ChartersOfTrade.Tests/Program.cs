@@ -35,6 +35,7 @@ var tests = new (string Name, Action Run)[]
     ("prototype warehouse policies expose safety stock", PrototypeWarehousePoliciesExposeSafetyStock),
     ("prototype warehouse policy overrides are deterministic", PrototypeWarehousePolicyOverridesAreDeterministic),
     ("prototype warehouse policy changes save hash", PrototypeWarehousePolicyChangesSaveHash),
+    ("prototype warehouse automation modes affect policy and hash", PrototypeWarehouseAutomationModesAffectPolicyAndHash),
     ("prototype warehouse policy clamps and rejects invalid targets", PrototypeWarehousePolicyClampsAndRejectsInvalidTargets),
     ("prototype warehouse policy affects contract priority and availability", PrototypeWarehousePolicyAffectsContractPriorityAndAvailability),
     ("prototype route contracts follow shipment priority", PrototypeRouteContractsFollowShipmentPriority),
@@ -252,6 +253,7 @@ static void PrototypeWarehousePoliciesExposeSafetyStock()
     AssertTrue(trackedSignals.All(signal => signal.SafetyStock > 0), "Tracked needs should expose positive safety stock.");
     AssertTrue(trackedSignals.All(signal => signal.ReorderPoint >= signal.SafetyStock), "Reorder points should not sit below safety stock.");
     AssertTrue(trackedSignals.All(signal => !signal.IsPolicyOverridden), "Default policy signals should not be marked as overridden.");
+    AssertTrue(trackedSignals.All(signal => signal.PolicyMode == PrototypeSession.BalancedWarehouseMode), "Default policy signals should start in balanced mode.");
     AssertTrue(trackedSignals.Any(signal => signal.ShipmentPriority > 0), "Expected at least one market signal to request shipment priority.");
     AssertTrue(trackedSignals.Any(signal => signal.PolicyAction.Contains("reorder", StringComparison.Ordinal) || signal.PolicyAction.Contains("shipment", StringComparison.Ordinal) || signal.PolicyAction.Contains("top up", StringComparison.Ordinal)), "Expected policy actions to explain shipment decisions.");
 }
@@ -295,6 +297,40 @@ static void PrototypeWarehousePolicyChangesSaveHash()
     AssertEqual(signal.ReorderPoint + 2, updated.ReorderPoint);
 }
 
+static void PrototypeWarehouseAutomationModesAffectPolicyAndHash()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(424242);
+    var city = session.Current.Cities[0];
+    var signal = city.MarketSignals.First(item => item.DesiredStock > 0);
+    var initialHash = session.Current.SaveHash;
+
+    AssertEqual(PrototypeSession.BalancedWarehouseMode, signal.PolicyMode);
+    AssertTrue(session.SetWarehousePolicyMode(city.Id, signal.ResourceId, PrototypeSession.ConservativeWarehouseMode), "Expected conservative warehouse mode to apply.");
+    var conservative = SignalFor(session.Current, city.Id, signal.ResourceId);
+
+    AssertTrue(session.Current.SaveHash != initialHash, "Non-default warehouse mode should affect the state hash.");
+    AssertTrue(conservative.IsPolicyOverridden, "Conservative mode should be stored as an explicit policy override.");
+    AssertEqual(PrototypeSession.ConservativeWarehouseMode, conservative.PolicyMode);
+    AssertTrue(conservative.SafetyStock >= signal.SafetyStock, "Conservative mode should not lower safety stock.");
+    AssertTrue(conservative.ReorderPoint > signal.ReorderPoint || conservative.SafetyStock > signal.SafetyStock, "Conservative mode should raise at least one policy threshold.");
+    AssertTrue(conservative.PolicyAction.Contains("conservative", StringComparison.Ordinal), "Policy action should expose conservative mode.");
+
+    var contractSession = new SimulationBridge().CreatePrototypeSession(424242);
+    var contractCandidate = contractSession.Current.AvailableContracts.First();
+    AssertTrue(contractSession.SetWarehousePolicyMode(contractCandidate.ToNode, contractCandidate.ResourceId, PrototypeSession.ConservativeWarehouseMode), "Expected Conservative mode to apply to a contract destination.");
+    var updatedContract = contractSession.Current.AvailableContracts.Single(contract => contract.Id == contractCandidate.Id);
+    AssertTrue(updatedContract.PolicyAction.Contains("conservative", StringComparison.Ordinal), "Contract action should expose conservative mode.");
+    AssertTrue(updatedContract.PolicyAction != contractCandidate.PolicyAction, "Contract policy text should change when Conservative mode is applied.");
+
+    AssertTrue(session.SetWarehousePolicyMode(city.Id, signal.ResourceId, PrototypeSession.BalancedWarehouseMode), "Expected balanced warehouse mode to reset policy.");
+    var balanced = SignalFor(session.Current, city.Id, signal.ResourceId);
+    AssertEqual(PrototypeSession.BalancedWarehouseMode, balanced.PolicyMode);
+    AssertTrue(!balanced.IsPolicyOverridden, "Balanced mode should return to default policy state.");
+    AssertEqual(signal.SafetyStock, balanced.SafetyStock);
+    AssertEqual(signal.ReorderPoint, balanced.ReorderPoint);
+    AssertEqual(initialHash, session.Current.SaveHash);
+}
+
 static void PrototypeWarehousePolicyClampsAndRejectsInvalidTargets()
 {
     var session = new SimulationBridge().CreatePrototypeSession(424242);
@@ -306,6 +342,7 @@ static void PrototypeWarehousePolicyClampsAndRejectsInvalidTargets()
     AssertTrue(!session.SetWarehousePolicy("missing-city", signal.ResourceId, 2, 4), "Expected unknown city id to be rejected.");
     AssertTrue(!session.SetWarehousePolicy(city.Id, "missing-resource", 2, 4), "Expected unknown resource id to be rejected.");
     AssertTrue(!session.SetWarehousePolicy(city.Id, "wool", 2, 4), "Expected resources without market needs to be rejected as policy targets.");
+    AssertTrue(!session.SetWarehousePolicyMode(city.Id, signal.ResourceId, "reckless"), "Expected unknown warehouse mode to be rejected.");
     AssertEqual(initialTick, session.Current.Tick);
     AssertEqual(initialHash, session.Current.SaveHash);
 
@@ -645,7 +682,7 @@ static void WarehousePolicySaveLoadPreservesHash()
     {
         WarehousePolicies =
         [
-            new WarehousePolicySaveState(snapshot.World.Nodes[0].Id, "grain", 5, 12)
+            new WarehousePolicySaveState(snapshot.World.Nodes[0].Id, "grain", 5, 12, PrototypeSession.ConservativeWarehouseMode)
         ]
     };
     var firstHash = SaveCodec.ComputeStateHash(save);
@@ -655,6 +692,10 @@ static void WarehousePolicySaveLoadPreservesHash()
 
     AssertEqual(firstHash, secondHash);
     AssertTrue(firstHash != SaveCodec.ComputeStateHash(save with { WarehousePolicies = [] }), "Warehouse policy saves should affect state hash.");
+    AssertTrue(firstHash != SaveCodec.ComputeStateHash(save with { WarehousePolicies = [save.WarehousePolicies[0] with { Mode = null }] }), "Non-default warehouse policy mode should affect state hash.");
+    AssertEqual(
+        SaveCodec.ComputeStateHash(save with { WarehousePolicies = [save.WarehousePolicies[0] with { Mode = null }] }),
+        SaveCodec.ComputeStateHash(save with { WarehousePolicies = [save.WarehousePolicies[0] with { Mode = PrototypeSession.BalancedWarehouseMode }] }));
 
     try
     {
@@ -664,6 +705,16 @@ static void WarehousePolicySaveLoadPreservesHash()
     catch (SaveValidationException ex)
     {
         AssertTrue(ex.Errors.Any(error => error.Contains("saveVersion", StringComparison.Ordinal)), "Expected save version validation error.");
+    }
+
+    try
+    {
+        SaveCodec.Serialize(save with { WarehousePolicies = [save.WarehousePolicies[0] with { Mode = "reckless" }] });
+        throw new InvalidOperationException("Expected save validation to reject unknown warehouse policy modes.");
+    }
+    catch (SaveValidationException ex)
+    {
+        AssertTrue(ex.Errors.Any(error => error.Contains("mode must be balanced or conservative", StringComparison.Ordinal)), "Expected warehouse policy mode validation error.");
     }
 }
 
@@ -852,12 +903,13 @@ static string PolicyFingerprint(PrototypeSnapshot snapshot)
         .SelectMany(city => city.MarketSignals.Select(signal =>
             string.Format(
                 CultureInfo.InvariantCulture,
-                "{0}:{1}:{2}:{3}:{4}:{5}",
+                "{0}:{1}:{2}:{3}:{4}:{5}:{6}",
                 city.Id,
                 signal.ResourceId,
                 signal.SafetyStock,
                 signal.ReorderPoint,
                 signal.IsPolicyOverridden,
+                signal.PolicyMode,
                 signal.ShipmentPriority))));
 }
 

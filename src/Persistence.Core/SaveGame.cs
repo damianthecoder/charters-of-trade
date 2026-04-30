@@ -36,7 +36,8 @@ public sealed record WarehousePolicySaveState(
     string CityId,
     string ResourceId,
     int SafetyStock,
-    int ReorderPoint);
+    int ReorderPoint,
+    string? Mode = null);
 
 public sealed record RoutePolicySaveState(
     string RouteId,
@@ -100,6 +101,10 @@ public static class SaveCodec
             Routes = save.Routes.OrderBy(route => route.Id, StringComparer.Ordinal).ToArray(),
             Events = save.Events.OrderBy(evt => evt.Id, StringComparer.Ordinal).ToArray(),
             WarehousePolicies = save.WarehousePolicies
+                .Select(policy => policy with
+                {
+                    Mode = NormalizeWarehousePolicyMode(policy.Mode)
+                })
                 .OrderBy(policy => policy.CityId, StringComparer.Ordinal)
                 .ThenBy(policy => policy.ResourceId, StringComparer.Ordinal)
                 .ToArray(),
@@ -115,6 +120,13 @@ public static class SaveCodec
                 DiscoveredNodes = save.FogOfWar.DiscoveredNodes.Order(StringComparer.Ordinal).ToArray()
             }
         };
+    }
+
+    private static string? NormalizeWarehousePolicyMode(string? mode)
+    {
+        return string.Equals(mode, "balanced", StringComparison.Ordinal)
+            ? null
+            : mode;
     }
 }
 
@@ -243,6 +255,17 @@ public static class SaveValidator
                 if (policy.ReorderPoint < policy.SafetyStock)
                 {
                     errors.Add($"warehouse policy '{policy.CityId}:{policy.ResourceId}' reorderPoint must not be below safetyStock");
+                }
+
+                if (policy.Mode is not null && string.IsNullOrWhiteSpace(policy.Mode))
+                {
+                    errors.Add($"warehouse policy '{policy.CityId}:{policy.ResourceId}' mode must not be empty when present");
+                }
+                else if (policy.Mode is not null
+                    && !string.Equals(policy.Mode, "balanced", StringComparison.Ordinal)
+                    && !string.Equals(policy.Mode, "conservative", StringComparison.Ordinal))
+                {
+                    errors.Add($"warehouse policy '{policy.CityId}:{policy.ResourceId}' mode must be balanced or conservative");
                 }
             }
         }

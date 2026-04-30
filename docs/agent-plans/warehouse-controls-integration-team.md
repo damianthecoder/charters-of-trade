@@ -59,8 +59,13 @@ Responsibilities:
 - Do not replace save version 2 with any save-v1 automation model.
 - Do not duplicate ADR-0006; update it only if the save decision materially changes.
 - Do not merge unverified branch diffs wholesale. Port small, reviewed pieces.
+- If a handoff describes detached work that is not present locally or on GitHub, record the mismatch and reimplement only the missing behavior against the synced branch.
 - Keep generated artifacts out of commits.
 - Run `tools/test.ps1` and `tools/benchmark.ps1` before final summary.
+
+## Coordination Update
+
+The pushed `origin/agent/warehouse-automation-controls` branch contained an older reorder/reserve implementation already superseded by this integration branch. The reported Balanced/Conservative mode work was not present in the local workspace or fetched GitHub refs, so the integration branch now implements that missing mode layer directly on top of the canonical save-v2 warehouse policy model.
 
 ## Ready Criteria
 

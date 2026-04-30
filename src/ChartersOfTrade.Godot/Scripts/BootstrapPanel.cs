@@ -45,6 +45,7 @@ public partial class BootstrapPanel : Control
     private Label? _warehousePolicySummary;
     private OptionButton? _policyFocusOptions;
     private OptionButton? _warehouseResourceOptions;
+    private OptionButton? _warehouseModeOptions;
     private SpinBox? _warehouseSafetyInput;
     private SpinBox? _warehouseReorderInput;
     private Button? _warehouseApplyButton;
@@ -306,6 +307,17 @@ public partial class BootstrapPanel : Control
         _warehousePolicySummary = CreateInlineLabel("Select a city to control warehouse policy.");
         warehousePolicyStack.AddChild(_warehousePolicySummary);
 
+        _warehouseModeOptions = new OptionButton
+        {
+            Name = "WarehouseModeOptions",
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 30)
+        };
+        _warehouseModeOptions.AddItem("Balanced", 0);
+        _warehouseModeOptions.AddItem("Conservative", 1);
+        _warehouseModeOptions.ItemSelected += OnWarehouseModeSelected;
+        warehousePolicyStack.AddChild(_warehouseModeOptions);
+
         _warehouseResourceOptions = new OptionButton
         {
             Name = "WarehouseResourceOptions",
@@ -502,6 +514,7 @@ public partial class BootstrapPanel : Control
         _warehousePolicySummary = null;
         _policyFocusOptions = null;
         _warehouseResourceOptions = null;
+        _warehouseModeOptions = null;
         _warehouseSafetyInput = null;
         _warehouseReorderInput = null;
         _warehouseApplyButton = null;
@@ -894,6 +907,7 @@ public partial class BootstrapPanel : Control
         if (_snapshot is null
             || _warehousePolicySummary is null
             || _warehouseResourceOptions is null
+            || _warehouseModeOptions is null
             || _warehouseSafetyInput is null
             || _warehouseReorderInput is null
             || _warehouseApplyButton is null)
@@ -936,7 +950,7 @@ public partial class BootstrapPanel : Control
         {
             var signal = _visibleWarehousePolicies[i];
             var source = signal.IsPolicyOverridden ? "manual" : "default";
-            _warehouseResourceOptions.AddItem($"{ResourceLabel(signal.ResourceId)} | safety {signal.SafetyStock}, reorder {signal.ReorderPoint} ({source})", i);
+            _warehouseResourceOptions.AddItem($"{ResourceLabel(signal.ResourceId)} | {WarehouseModeLabel(signal.PolicyMode)} | safety {signal.SafetyStock}, reorder {signal.ReorderPoint} ({source})", i);
             if (string.Equals(signal.ResourceId, previousResourceId, StringComparison.Ordinal))
             {
                 selectedIndex = i;
@@ -960,9 +974,9 @@ public partial class BootstrapPanel : Control
         UpdatePolicyPanel();
     }
 
-    private void RefreshWarehousePolicyInputs()
+    private void OnWarehouseModeSelected(long _)
     {
-        if (_warehousePolicySummary is null || _warehouseSafetyInput is null || _warehouseReorderInput is null)
+        if (_refreshingWarehousePolicyControl || _session is null || _snapshot is null || _warehouseModeOptions is null)
         {
             return;
         }
@@ -974,11 +988,43 @@ public partial class BootstrapPanel : Control
             return;
         }
 
+        var previousHash = _snapshot.SaveHash;
+        var mode = _warehouseModeOptions.Selected == 1
+            ? PrototypeSession.ConservativeWarehouseMode
+            : PrototypeSession.BalancedWarehouseMode;
+        if (!_session.SetWarehousePolicyMode(city.Id, signal.ResourceId, mode))
+        {
+            _warehousePolicyMessage = $"Warehouse mode rejected for {city.Name} {ResourceLabel(signal.ResourceId)}.";
+            UpdatePolicyPanel();
+            return;
+        }
+
+        _snapshot = _session.Current;
+        _warehousePolicyMessage = $"Warehouse mode: {city.Name} {ResourceLabel(signal.ResourceId)} -> {WarehouseModeLabel(mode)}; save {ShortHash(previousHash)} -> {ShortHash(_snapshot.SaveHash)}.";
+        KeepValidSelection();
+        UpdatePrototypeView();
+    }
+
+    private void RefreshWarehousePolicyInputs()
+    {
+        if (_warehousePolicySummary is null || _warehouseModeOptions is null || _warehouseSafetyInput is null || _warehouseReorderInput is null)
+        {
+            return;
+        }
+
+        var city = SelectedWarehousePolicyCity();
+        var signal = SelectedWarehousePolicySignal();
+        if (city is null || signal is null)
+        {
+            return;
+        }
+
+        _warehouseModeOptions.Select(string.Equals(signal.PolicyMode, PrototypeSession.ConservativeWarehouseMode, StringComparison.Ordinal) ? 1 : 0);
         _warehouseSafetyInput.Value = signal.SafetyStock;
         _warehouseReorderInput.Value = signal.ReorderPoint;
         var source = signal.IsPolicyOverridden ? "manual policy" : "default policy";
         var exportable = Math.Max(0, signal.WarehouseStock - signal.SafetyStock);
-        _warehousePolicySummary.Text = $"{city.Name}: {ResourceLabel(signal.ResourceId)} uses {source}; reserved {signal.SafetyStock}, exportable {exportable}.";
+        _warehousePolicySummary.Text = $"{city.Name}: {ResourceLabel(signal.ResourceId)} uses {WarehouseModeLabel(signal.PolicyMode)} {source}; reserved {signal.SafetyStock}, exportable {exportable}.";
     }
 
     private void ApplyWarehousePolicy()
@@ -1003,7 +1049,7 @@ public partial class BootstrapPanel : Control
         var previousHash = _snapshot.SaveHash;
         var safetyStock = (int)_warehouseSafetyInput.Value;
         var reorderPoint = (int)_warehouseReorderInput.Value;
-        if (!_session.SetWarehousePolicy(city.Id, signal.ResourceId, safetyStock, reorderPoint))
+        if (!_session.SetWarehousePolicy(city.Id, signal.ResourceId, safetyStock, reorderPoint, signal.PolicyMode))
         {
             _warehousePolicyMessage = $"Warehouse policy rejected for {city.Name} {ResourceLabel(signal.ResourceId)}.";
             UpdatePolicyPanel();
@@ -1015,7 +1061,7 @@ public partial class BootstrapPanel : Control
         var updatedSignal = updatedCity?.MarketSignals.FirstOrDefault(candidate => candidate.ResourceId == signal.ResourceId);
         _warehousePolicyMessage = updatedSignal is null
             ? $"Applied warehouse policy to {city.Name}; save {ShortHash(previousHash)} -> {ShortHash(_snapshot.SaveHash)}."
-            : $"Applied warehouse policy: {city.Name} {ResourceLabel(updatedSignal.ResourceId)} reserved {updatedSignal.SafetyStock}, reorder {updatedSignal.ReorderPoint}; save {ShortHash(previousHash)} -> {ShortHash(_snapshot.SaveHash)}.";
+            : $"Applied warehouse policy: {city.Name} {ResourceLabel(updatedSignal.ResourceId)} {WarehouseModeLabel(updatedSignal.PolicyMode)}, reserved {updatedSignal.SafetyStock}, reorder {updatedSignal.ReorderPoint}; save {ShortHash(previousHash)} -> {ShortHash(_snapshot.SaveHash)}.";
 
         KeepValidSelection();
         UpdatePrototypeView();
@@ -1026,6 +1072,11 @@ public partial class BootstrapPanel : Control
         if (_warehouseResourceOptions is not null)
         {
             _warehouseResourceOptions.Disabled = !enabled;
+        }
+
+        if (_warehouseModeOptions is not null)
+        {
+            _warehouseModeOptions.Disabled = !enabled;
         }
 
         if (_warehouseSafetyInput is not null)
@@ -1167,14 +1218,15 @@ public partial class BootstrapPanel : Control
     private string PolicySignalLine(PrototypeMarketSignal signal)
     {
         var source = signal.IsPolicyOverridden ? "manual" : "default";
+        var mode = WarehouseModeLabel(signal.PolicyMode);
         return _policyViewMode switch
         {
             PrototypePolicyViewMode.Safety =>
-                $"{ResourceLabel(signal.ResourceId)}: warehouse {signal.WarehouseStock}, reserved {signal.SafetyStock}, exportable {Math.Max(0, signal.WarehouseStock - signal.SafetyStock)}, market {signal.MarketStock}/{signal.DesiredStock}, P{signal.ShipmentPriority}, {source}\n",
+                $"{ResourceLabel(signal.ResourceId)}: {mode}, warehouse {signal.WarehouseStock}, reserved {signal.SafetyStock}, exportable {Math.Max(0, signal.WarehouseStock - signal.SafetyStock)}, market {signal.MarketStock}/{signal.DesiredStock}, P{signal.ShipmentPriority}, {source}\n",
             PrototypePolicyViewMode.Reorder =>
-                $"{ResourceLabel(signal.ResourceId)}: market {signal.MarketStock}, reorder {signal.ReorderPoint}, gap {Math.Max(0, signal.ReorderPoint - signal.MarketStock)}, warehouse {signal.WarehouseStock}, P{signal.ShipmentPriority}, {source}\n",
+                $"{ResourceLabel(signal.ResourceId)}: {mode}, market {signal.MarketStock}, reorder {signal.ReorderPoint}, gap {Math.Max(0, signal.ReorderPoint - signal.MarketStock)}, warehouse {signal.WarehouseStock}, P{signal.ShipmentPriority}, {source}\n",
             _ =>
-                $"{ResourceLabel(signal.ResourceId)}: market {signal.MarketStock}/{signal.DesiredStock}, warehouse {signal.WarehouseStock}, reserved {signal.SafetyStock}, exportable {Math.Max(0, signal.WarehouseStock - signal.SafetyStock)}, reorder {signal.ReorderPoint}, P{signal.ShipmentPriority}, {source}\n"
+                $"{ResourceLabel(signal.ResourceId)}: {mode}, market {signal.MarketStock}/{signal.DesiredStock}, warehouse {signal.WarehouseStock}, reserved {signal.SafetyStock}, exportable {Math.Max(0, signal.WarehouseStock - signal.SafetyStock)}, reorder {signal.ReorderPoint}, P{signal.ShipmentPriority}, {source}\n"
         };
     }
 
@@ -1214,6 +1266,13 @@ public partial class BootstrapPanel : Control
             PrototypePolicyViewMode.Reorder => "Auto reorder",
             _ => "Auto priority"
         };
+    }
+
+    private static string WarehouseModeLabel(string mode)
+    {
+        return string.Equals(mode, PrototypeSession.ConservativeWarehouseMode, StringComparison.Ordinal)
+            ? "Conservative"
+            : "Balanced";
     }
 
     private void UpdateTestProbe()

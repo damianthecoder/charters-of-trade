@@ -47,8 +47,11 @@ public partial class VisualQaRunner : Control
             var sidebar = FindRequired<ScrollContainer>(uiRoot);
             var routePolicyOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "RoutePolicyResourceOptions", StringComparison.Ordinal));
             var policyFocusOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "PolicyFocusOptions", StringComparison.Ordinal));
+            var warehouseModeOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "WarehouseModeOptions", StringComparison.Ordinal));
             await ScrollControlIntoViewAsync(sidebar, routePolicyOptions, "Route policy resource options");
             await ScrollControlIntoViewAsync(sidebar, policyFocusOptions, "Warehouse policy focus options");
+            await ScrollControlIntoViewAsync(sidebar, warehouseModeOptions, "Warehouse automation mode options");
+            captures.Add(SaveCapture(outputDir, $"seed-{seed}-warehouse-mode.png"));
             sidebar.ScrollVertical = 0;
             await WaitFrames(2);
 

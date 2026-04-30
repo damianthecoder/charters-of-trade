@@ -115,15 +115,36 @@ public partial class InteractionSmokeRunner : Control
         AssertSmoke(AnyVisibleTextContains(uiRoot, "View: Priority dispatch"), "Warehouse policy did not render the priority dispatch view.");
 
         var warehouseResourceOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "WarehouseResourceOptions", StringComparison.Ordinal));
+        var warehouseModeOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "WarehouseModeOptions", StringComparison.Ordinal));
         var warehouseSafetyInput = FindRequired<SpinBox>(uiRoot, control => string.Equals(control.Name, "WarehouseSafetyInput", StringComparison.Ordinal));
         var warehouseReorderInput = FindRequired<SpinBox>(uiRoot, control => string.Equals(control.Name, "WarehouseReorderInput", StringComparison.Ordinal));
         var applyWarehousePolicyButton = FindButton(uiRoot, "Apply Warehouse Policy");
+        await ScrollControlIntoViewAsync(sidebarScroll, warehouseModeOptions, "Warehouse automation mode options");
         await ScrollControlIntoViewAsync(sidebarScroll, warehouseResourceOptions, "Warehouse policy resource options");
+        AssertSmoke(!warehouseModeOptions.Disabled, "Warehouse automation mode options stayed disabled after selecting a city.");
         AssertSmoke(!warehouseResourceOptions.Disabled, "Warehouse policy resource options stayed disabled after selecting a city.");
         AssertSmoke(!applyWarehousePolicyButton.Disabled, "Apply Warehouse Policy stayed disabled after selecting a city.");
+        AssertControlIntersectsViewport(warehouseModeOptions, "Warehouse automation mode options");
         AssertControlIntersectsViewport(warehouseResourceOptions, "Warehouse policy resource options");
         AssertControlIntersectsViewport(applyWarehousePolicyButton, "Apply Warehouse Policy");
         AssertSmoke(AnyVisibleTextContains(uiRoot, "reserved"), "Warehouse policy panel did not explain reserved stock.");
+
+        var preModeHash = GetMetricValue(uiRoot, "Save Hash");
+        var conservativeModeIndex = FindItemIndex(warehouseModeOptions, "Conservative");
+        warehouseModeOptions.Select(conservativeModeIndex);
+        warehouseModeOptions.EmitSignal(OptionButton.SignalName.ItemSelected, (long)conservativeModeIndex);
+        await WaitFrames(2);
+        AssertSmoke(GetMetricValue(uiRoot, "Save Hash") != preModeHash, "Conservative warehouse mode did not change the save hash.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "Conservative"), "Warehouse policy panel did not expose Conservative mode.");
+
+        var postConservativeHash = GetMetricValue(uiRoot, "Save Hash");
+        var balancedModeIndex = FindItemIndex(warehouseModeOptions, "Balanced");
+        warehouseModeOptions.Select(balancedModeIndex);
+        warehouseModeOptions.EmitSignal(OptionButton.SignalName.ItemSelected, (long)balancedModeIndex);
+        await WaitFrames(2);
+        AssertSmoke(GetMetricValue(uiRoot, "Save Hash") != postConservativeHash, "Balanced warehouse mode did not reset the save hash.");
+        AssertSmoke(GetMetricValue(uiRoot, "Save Hash") == preModeHash, "Balanced warehouse mode did not return to the default policy hash.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "Balanced"), "Warehouse policy panel did not expose Balanced mode.");
 
         var prePolicyHash = GetMetricValue(uiRoot, "Save Hash");
         warehouseSafetyInput.Value = Math.Min(64, warehouseSafetyInput.Value + 1);

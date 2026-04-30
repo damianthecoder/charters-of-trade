@@ -31,6 +31,7 @@ public sealed record PrototypeMarketSignal(
     int SafetyStock,
     int ReorderPoint,
     bool IsPolicyOverridden,
+    string PolicyMode,
     int ShipmentPriority,
     string Reason,
     string PolicyAction);
@@ -104,6 +105,8 @@ public sealed class PrototypeSession
 
     private const int MinPolicyStock = 0;
     private const int MaxPolicyStock = 64;
+    public const string BalancedWarehouseMode = "balanced";
+    public const string ConservativeWarehouseMode = "conservative";
 
     public PrototypeSession(GeneratedWorld world, GameContent content, IReadOnlyList<TradeRoute> routes)
     {
@@ -140,9 +143,16 @@ public sealed class PrototypeSession
         return true;
     }
 
-    public bool SetWarehousePolicy(string cityId, string resourceId, int safetyStock, int reorderPoint)
+    public bool SetWarehousePolicy(string cityId, string resourceId, int safetyStock, int reorderPoint, string? mode = null)
     {
         if (!IsKnownPolicyTarget(cityId, resourceId))
+        {
+            return false;
+        }
+
+        var city = _cities.First(item => string.Equals(item.Id, cityId, StringComparison.Ordinal));
+        var currentPolicy = EffectivePolicyFor(city, resourceId, NeedFor(resourceId));
+        if (!TryNormalizeWarehouseMode(mode ?? currentPolicy.Mode, out var normalizedMode))
         {
             return false;
         }
@@ -151,7 +161,29 @@ public sealed class PrototypeSession
         var clampedReorderPoint = Math.Clamp(reorderPoint, MinPolicyStock, MaxPolicyStock);
         clampedReorderPoint = Math.Max(clampedReorderPoint, clampedSafetyStock);
 
-        _warehousePolicyOverrides[new WarehousePolicyKey(cityId, resourceId)] = new WarehousePolicyOverride(clampedSafetyStock, clampedReorderPoint);
+        _warehousePolicyOverrides[new WarehousePolicyKey(cityId, resourceId)] = new WarehousePolicyOverride(clampedSafetyStock, clampedReorderPoint, normalizedMode);
+        Current = BuildSnapshot(Current.Tick);
+        return true;
+    }
+
+    public bool SetWarehousePolicyMode(string cityId, string resourceId, string mode)
+    {
+        if (!IsKnownPolicyTarget(cityId, resourceId) || !TryNormalizeWarehouseMode(mode, out var normalizedMode))
+        {
+            return false;
+        }
+
+        var key = new WarehousePolicyKey(cityId, resourceId);
+        var need = NeedFor(resourceId);
+        if (string.Equals(normalizedMode, BalancedWarehouseMode, StringComparison.Ordinal))
+        {
+            _warehousePolicyOverrides.Remove(key);
+            Current = BuildSnapshot(Current.Tick);
+            return true;
+        }
+
+        var policy = PolicyForMode(need, normalizedMode, true);
+        _warehousePolicyOverrides[key] = new WarehousePolicyOverride(policy.SafetyStock, policy.ReorderPoint, normalizedMode);
         Current = BuildSnapshot(Current.Tick);
         return true;
     }
@@ -592,9 +624,10 @@ public sealed class PrototypeSession
                 policy.SafetyStock,
                 policy.ReorderPoint,
                 policy.IsOverride,
+                policy.Mode,
                 shipmentPriority,
                 MarketReason(marketStock, warehouseStock, desiredStock, consumption, price?.Scarcity ?? 0, policy.SafetyStock, policy.ReorderPoint),
-                PolicyAction(shipmentPriority, desiredStock, marketStock, consumption)));
+                PolicyAction(shipmentPriority, desiredStock, marketStock, consumption, policy.Mode)));
         }
 
         return signals
@@ -669,7 +702,12 @@ public sealed class PrototypeSession
             _warehousePolicyOverrides
                 .OrderBy(kvp => kvp.Key.CityId, StringComparer.Ordinal)
                 .ThenBy(kvp => kvp.Key.ResourceId, StringComparer.Ordinal)
-                .Select(kvp => new WarehousePolicySaveState(kvp.Key.CityId, kvp.Key.ResourceId, kvp.Value.SafetyStock, kvp.Value.ReorderPoint))
+                .Select(kvp => new WarehousePolicySaveState(
+                    kvp.Key.CityId,
+                    kvp.Key.ResourceId,
+                    kvp.Value.SafetyStock,
+                    kvp.Value.ReorderPoint,
+                    ModeForSave(kvp.Value.Mode)))
                 .ToArray(),
             BuildRouteSavePolicies(),
             selectedContractId);
@@ -755,7 +793,13 @@ public sealed class PrototypeSession
     private string PolicyAction(RuntimeCity city, string resourceId)
     {
         var need = NeedFor(resourceId);
-        return PolicyAction(ShipmentPriority(city, resourceId), Math.Max(0, need?.DesiredStock ?? 0), city.Market.Get(resourceId), Math.Max(0, need?.ConsumptionPerTick ?? 0));
+        var policy = EffectivePolicyFor(city, resourceId, need);
+        return PolicyAction(
+            ShipmentPriority(city, resourceId),
+            Math.Max(0, need?.DesiredStock ?? 0),
+            city.Market.Get(resourceId),
+            Math.Max(0, need?.ConsumptionPerTick ?? 0),
+            policy.Mode);
     }
 
     private string ContractPolicyAction(string routeId, RuntimeCity city, string resourceId)
@@ -841,10 +885,49 @@ public sealed class PrototypeSession
     {
         if (_warehousePolicyOverrides.TryGetValue(new WarehousePolicyKey(city.Id, resourceId), out var policy))
         {
-            return new WarehousePolicy(policy.SafetyStock, policy.ReorderPoint, true);
+            return new WarehousePolicy(policy.SafetyStock, policy.ReorderPoint, true, policy.Mode);
         }
 
-        return new WarehousePolicy(SafetyStockFor(need), ReorderPointFor(need), false);
+        return PolicyForMode(need, BalancedWarehouseMode, false);
+    }
+
+    private static WarehousePolicy PolicyForMode(MarketNeed? need, string mode, bool isOverride)
+    {
+        return string.Equals(mode, ConservativeWarehouseMode, StringComparison.Ordinal)
+            ? new WarehousePolicy(ConservativeSafetyStockFor(need), ConservativeReorderPointFor(need), isOverride, ConservativeWarehouseMode)
+            : new WarehousePolicy(SafetyStockFor(need), ReorderPointFor(need), isOverride, BalancedWarehouseMode);
+    }
+
+    private static bool TryNormalizeWarehouseMode(string? mode, out string normalizedMode)
+    {
+        if (string.IsNullOrWhiteSpace(mode))
+        {
+            normalizedMode = BalancedWarehouseMode;
+            return true;
+        }
+
+        var trimmed = mode.Trim();
+        if (string.Equals(trimmed, BalancedWarehouseMode, StringComparison.OrdinalIgnoreCase))
+        {
+            normalizedMode = BalancedWarehouseMode;
+            return true;
+        }
+
+        if (string.Equals(trimmed, ConservativeWarehouseMode, StringComparison.OrdinalIgnoreCase))
+        {
+            normalizedMode = ConservativeWarehouseMode;
+            return true;
+        }
+
+        normalizedMode = BalancedWarehouseMode;
+        return false;
+    }
+
+    private static string? ModeForSave(string mode)
+    {
+        return string.Equals(mode, BalancedWarehouseMode, StringComparison.Ordinal)
+            ? null
+            : mode;
     }
 
     private static int ContractUnits(TradeRoute route)
@@ -870,6 +953,26 @@ public sealed class PrototypeSession
         }
 
         return Math.Max(SafetyStockFor(need) + need.ConsumptionPerTick, (int)Math.Ceiling(need.DesiredStock * 0.50));
+    }
+
+    private static int ConservativeSafetyStockFor(MarketNeed? need)
+    {
+        if (need is null)
+        {
+            return 0;
+        }
+
+        return Math.Max(SafetyStockFor(need) + need.ConsumptionPerTick, (int)Math.Ceiling(need.DesiredStock * 0.40));
+    }
+
+    private static int ConservativeReorderPointFor(MarketNeed? need)
+    {
+        if (need is null)
+        {
+            return 0;
+        }
+
+        return Math.Max(ConservativeSafetyStockFor(need) + need.ConsumptionPerTick, (int)Math.Ceiling(need.DesiredStock * 0.70));
     }
 
     private static int ShipmentPriority(int marketStock, int desiredStock, int safetyStock, int reorderPoint)
@@ -959,9 +1062,9 @@ public sealed class PrototypeSession
         return decimal.Round(value, 2, MidpointRounding.AwayFromZero);
     }
 
-    private static string PolicyAction(int shipmentPriority, int desiredStock, int marketStock, int consumptionPerTick)
+    private static string PolicyAction(int shipmentPriority, int desiredStock, int marketStock, int consumptionPerTick, string mode)
     {
-        return shipmentPriority switch
+        var action = shipmentPriority switch
         {
             4 => "emergency shipment",
             3 => "protect safety stock",
@@ -971,6 +1074,10 @@ public sealed class PrototypeSession
                 ? "surplus; export above target"
                 : "hold"
         };
+
+        return string.Equals(mode, ConservativeWarehouseMode, StringComparison.Ordinal)
+            ? $"{action}; conservative mode"
+            : action;
     }
 
     private static string MarketReason(int marketStock, int warehouseStock, int desiredStock, int consumptionPerTick, double scarcity, int safetyStock, int reorderPoint)
@@ -1043,9 +1150,9 @@ public sealed class PrototypeSession
 
     private sealed record WarehousePolicyKey(string CityId, string ResourceId);
 
-    private sealed record WarehousePolicyOverride(int SafetyStock, int ReorderPoint);
+    private sealed record WarehousePolicyOverride(int SafetyStock, int ReorderPoint, string Mode);
 
-    private sealed record WarehousePolicy(int SafetyStock, int ReorderPoint, bool IsOverride);
+    private sealed record WarehousePolicy(int SafetyStock, int ReorderPoint, bool IsOverride, string Mode);
 
     private sealed record RoutePolicy(string RouteId, IReadOnlyList<string> ReservedResources, string? PriorityResourceId);
 }
