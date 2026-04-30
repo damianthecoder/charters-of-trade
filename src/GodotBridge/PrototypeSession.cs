@@ -1,3 +1,4 @@
+using System.Globalization;
 using ChartersOfTrade.AI.Company;
 using ChartersOfTrade.CitySim.Core;
 using ChartersOfTrade.Content.Core;
@@ -71,6 +72,42 @@ public sealed record PrototypeRoutePolicyView(
     IReadOnlyList<string> ReservedResources,
     string? PriorityResourceId);
 
+public sealed record PrototypeProductionResourceLineView(
+    string ResourceId,
+    int RequiredAmount,
+    int OutputAmount,
+    int WarehouseStock,
+    int MarketStock,
+    int ProtectedStock,
+    int AvailableAmount,
+    int MissingAmount,
+    decimal LocalUnitPrice,
+    double LocalScarcity,
+    string? BestDestinationCityId,
+    string? BestRouteId,
+    decimal? BestDestinationUnitPrice,
+    int DestinationShipmentPriority);
+
+public sealed record PrototypeProductionChainOpportunityView(
+    string Id,
+    string CityId,
+    string CityName,
+    string RecipeId,
+    string BuildingType,
+    IReadOnlyList<PrototypeProductionResourceLineView> Inputs,
+    IReadOnlyList<PrototypeProductionResourceLineView> Outputs,
+    int MaxRunsFromWarehouse,
+    decimal InputCost,
+    decimal OutputValue,
+    decimal ExpectedMargin,
+    string? BottleneckResourceId,
+    int MissingInputUnits,
+    int DestinationShipmentPriority,
+    decimal Score,
+    bool IsReady,
+    string? CandidateRouteId,
+    string Reason);
+
 public sealed record PrototypeSnapshot(
     int Tick,
     GeneratedWorld World,
@@ -90,6 +127,8 @@ public sealed record PrototypeSnapshot(
     public string? SelectedContractId { get; init; }
 
     public IReadOnlyList<PrototypeRoutePolicyView> RoutePolicies { get; init; } = [];
+
+    public IReadOnlyList<PrototypeProductionChainOpportunityView> ProductionChainOpportunities { get; init; } = [];
 
     public double UnmetDemandRatio => Prices.Count == 0 ? 0 : Math.Round(Prices.Average(price => Math.Max(0, price.Scarcity)), 4);
 
@@ -505,6 +544,7 @@ public sealed class PrototypeSession
         var charter = _cities[0];
         var prices = _economy.CalculatePrices(_content.Resources, charter.Market, _needs);
         var contracts = BuildAvailableContracts();
+        var productionChains = BuildProductionChainOpportunities();
         var selectedContractId = contracts.Any(contract => contract.Id == _selectedContractId)
             ? _selectedContractId
             : null;
@@ -543,7 +583,8 @@ public sealed class PrototypeSession
         {
             AvailableContracts = contracts,
             SelectedContractId = selectedContractId,
-            RoutePolicies = BuildRoutePolicyViews()
+            RoutePolicies = BuildRoutePolicyViews(),
+            ProductionChainOpportunities = productionChains
         };
     }
 
@@ -647,6 +688,281 @@ public sealed class PrototypeSession
             .ThenByDescending(signal => signal.Scarcity)
             .ThenBy(signal => signal.ResourceId, StringComparer.Ordinal)
             .ToArray();
+    }
+
+    private IReadOnlyList<PrototypeProductionChainOpportunityView> BuildProductionChainOpportunities()
+    {
+        var opportunities = new List<PrototypeProductionChainOpportunityView>();
+
+        foreach (var city in _cities.OrderBy(city => city.Id, StringComparer.Ordinal))
+        {
+            var localPrices = _economy
+                .CalculatePrices(_content.Resources, city.Market, _needs)
+                .ToDictionary(price => price.ResourceId, price => price, StringComparer.Ordinal);
+
+            foreach (var recipe in _content.Recipes.OrderBy(recipe => recipe.Id, StringComparer.Ordinal))
+            {
+                var inputs = recipe.Inputs
+                    .OrderBy(input => input.ResourceId, StringComparer.Ordinal)
+                    .Select(input => BuildProductionInputLine(city, input, localPrices))
+                    .ToArray();
+                var outputs = recipe.Outputs
+                    .OrderBy(output => output.ResourceId, StringComparer.Ordinal)
+                    .Select(output => BuildProductionOutputLine(city, output, localPrices))
+                    .ToArray();
+                var missingUnits = inputs.Sum(input => input.MissingAmount);
+                var maxRuns = MaxProductionRuns(city, recipe, inputs);
+                var isReady = maxRuns > 0;
+                var bottleneck = ProductionBottleneck(recipe, inputs, isReady);
+                var inputCost = RoundMoney(inputs.Sum(input => input.RequiredAmount * input.LocalUnitPrice));
+                var outputValue = RoundMoney(outputs.Sum(output => output.OutputAmount * (output.BestDestinationUnitPrice ?? output.LocalUnitPrice)));
+                var margin = RoundMoney(outputValue - inputCost);
+                var priority = outputs.Select(output => output.DestinationShipmentPriority).DefaultIfEmpty(0).Max();
+                var candidateRouteId = outputs
+                    .Where(output => output.BestRouteId is not null)
+                    .OrderByDescending(output => output.DestinationShipmentPriority)
+                    .ThenByDescending(output => output.BestDestinationUnitPrice ?? output.LocalUnitPrice)
+                    .ThenBy(output => output.BestRouteId, StringComparer.Ordinal)
+                    .Select(output => output.BestRouteId)
+                    .FirstOrDefault();
+                var roleBonus = ProductionRoleBonus(city, recipe);
+                var score = ProductionScore(isReady, priority, margin, inputs, roleBonus);
+
+                opportunities.Add(new PrototypeProductionChainOpportunityView(
+                    $"{city.Id}:{recipe.Id}",
+                    city.Id,
+                    city.Name,
+                    recipe.Id,
+                    recipe.BuildingType,
+                    ReadOnlyCopy(inputs),
+                    ReadOnlyCopy(outputs),
+                    maxRuns,
+                    inputCost,
+                    outputValue,
+                    margin,
+                    bottleneck,
+                    missingUnits,
+                    priority,
+                    score,
+                    isReady,
+                    candidateRouteId,
+                    ProductionReason(recipe, inputs, outputs, isReady, margin, bottleneck)));
+            }
+        }
+
+        return ReadOnlyCopy(opportunities
+            .OrderByDescending(opportunity => opportunity.IsReady)
+            .ThenByDescending(opportunity => opportunity.DestinationShipmentPriority)
+            .ThenByDescending(opportunity => opportunity.ExpectedMargin)
+            .ThenBy(opportunity => opportunity.MissingInputUnits)
+            .ThenByDescending(opportunity => opportunity.Score)
+            .ThenBy(opportunity => opportunity.CityId, StringComparer.Ordinal)
+            .ThenBy(opportunity => opportunity.RecipeId, StringComparer.Ordinal)
+            .ToArray());
+    }
+
+    private PrototypeProductionResourceLineView BuildProductionInputLine(
+        RuntimeCity city,
+        ResourceAmount input,
+        IReadOnlyDictionary<string, MarketPrice> localPrices)
+    {
+        localPrices.TryGetValue(input.ResourceId, out var price);
+        var warehouseStock = city.CompanyWarehouse.Get(input.ResourceId);
+        var protectedStock = WarehouseReserveFor(city, input.ResourceId);
+        var available = Math.Max(0, warehouseStock - protectedStock);
+        return new PrototypeProductionResourceLineView(
+            input.ResourceId,
+            input.Amount,
+            0,
+            warehouseStock,
+            city.Market.Get(input.ResourceId),
+            protectedStock,
+            available,
+            Math.Max(0, input.Amount - available),
+            price?.Price ?? _content.Resource(input.ResourceId).BasePrice,
+            price?.Scarcity ?? 0,
+            null,
+            null,
+            null,
+            0);
+    }
+
+    private PrototypeProductionResourceLineView BuildProductionOutputLine(
+        RuntimeCity city,
+        ResourceAmount output,
+        IReadOnlyDictionary<string, MarketPrice> localPrices)
+    {
+        localPrices.TryGetValue(output.ResourceId, out var price);
+        var destination = BestProductionDestination(city, output.ResourceId);
+        return new PrototypeProductionResourceLineView(
+            output.ResourceId,
+            0,
+            output.Amount,
+            city.CompanyWarehouse.Get(output.ResourceId),
+            city.Market.Get(output.ResourceId),
+            0,
+            city.CompanyWarehouse.Get(output.ResourceId),
+            0,
+            price?.Price ?? _content.Resource(output.ResourceId).BasePrice,
+            price?.Scarcity ?? 0,
+            destination?.CityId,
+            destination?.RouteId,
+            destination?.UnitPrice,
+            destination?.ShipmentPriority ?? 0);
+    }
+
+    private ProductionDestination? BestProductionDestination(RuntimeCity source, string resourceId)
+    {
+        return Routes
+            .Where(route => (route.FromNode == source.Id || route.ToNode == source.Id) && RouteAllowsResource(route.Id, resourceId))
+            .Select(route =>
+            {
+                var destinationId = route.FromNode == source.Id ? route.ToNode : route.FromNode;
+                var destination = _cities.FirstOrDefault(city => city.Id == destinationId);
+                if (destination is null)
+                {
+                    return null;
+                }
+
+                var prices = PricesFor(destination);
+                var unitPrice = prices.TryGetValue(resourceId, out var price) ? price : _content.Resource(resourceId).BasePrice;
+                var priority = ShipmentPriority(destination, resourceId) + RoutePriorityBoost(route.Id, resourceId);
+                return new ProductionDestination(destination.Id, route.Id, unitPrice, priority);
+            })
+            .Where(destination => destination is not null)
+            .OrderByDescending(destination => destination!.ShipmentPriority)
+            .ThenByDescending(destination => destination!.UnitPrice)
+            .ThenBy(destination => destination!.RouteId, StringComparer.Ordinal)
+            .ThenBy(destination => destination!.CityId, StringComparer.Ordinal)
+            .FirstOrDefault();
+    }
+
+    private static int MaxProductionRuns(
+        RuntimeCity city,
+        RecipeDef recipe,
+        IReadOnlyList<PrototypeProductionResourceLineView> inputs)
+    {
+        if (recipe.Inputs.Count == 0)
+        {
+            return SourceRecipeAvailable(city, recipe) ? 1 : 0;
+        }
+
+        if (inputs.Count == 0 || inputs.Any(input => input.RequiredAmount <= 0))
+        {
+            return 0;
+        }
+
+        return inputs.Min(input => input.AvailableAmount / input.RequiredAmount);
+    }
+
+    private static bool SourceRecipeAvailable(RuntimeCity city, RecipeDef recipe)
+    {
+        return recipe.Outputs.Any(output =>
+            city.CompanyWarehouse.Get(output.ResourceId) > 0
+            || city.Market.Get(output.ResourceId) > 0
+            || city.Specialization.AnchorResources.Contains(output.ResourceId, StringComparer.Ordinal)
+            || city.Specialization.OutputResources.Contains(output.ResourceId, StringComparer.Ordinal));
+    }
+
+    private static string? ProductionBottleneck(
+        RecipeDef recipe,
+        IReadOnlyList<PrototypeProductionResourceLineView> inputs,
+        bool isReady)
+    {
+        if (isReady)
+        {
+            return null;
+        }
+
+        var missing = inputs
+            .Where(input => input.MissingAmount > 0)
+            .OrderBy(input => input.ResourceId, StringComparer.Ordinal)
+            .FirstOrDefault();
+        if (missing is not null)
+        {
+            return missing.ResourceId;
+        }
+
+        return recipe.Outputs
+            .OrderBy(output => output.ResourceId, StringComparer.Ordinal)
+            .Select(output => output.ResourceId)
+            .FirstOrDefault();
+    }
+
+    private static decimal ProductionRoleBonus(RuntimeCity city, RecipeDef recipe)
+    {
+        var favoredOutputs = recipe.Outputs.Any(output =>
+            city.Specialization.OutputResources.Contains(output.ResourceId, StringComparer.Ordinal));
+        if (favoredOutputs)
+        {
+            return 8m;
+        }
+
+        var anchoredInputs = recipe.Inputs.Any(input =>
+            city.Specialization.AnchorResources.Contains(input.ResourceId, StringComparer.Ordinal));
+        return anchoredInputs ? 3m : 0m;
+    }
+
+    private static decimal ProductionScore(
+        bool isReady,
+        int destinationPriority,
+        decimal margin,
+        IReadOnlyList<PrototypeProductionResourceLineView> inputs,
+        decimal roleBonus)
+    {
+        var required = inputs.Sum(input => input.RequiredAmount);
+        var missing = inputs.Sum(input => input.MissingAmount);
+        var completeness = required <= 0 ? 1m : 1m - missing / (decimal)Math.Max(1, required);
+        return RoundMoney(
+            (isReady ? 100m : 0m)
+            + destinationPriority * 3m
+            + margin
+            + completeness * 20m
+            + roleBonus);
+    }
+
+    private static string ProductionReason(
+        RecipeDef recipe,
+        IReadOnlyList<PrototypeProductionResourceLineView> inputs,
+        IReadOnlyList<PrototypeProductionResourceLineView> outputs,
+        bool isReady,
+        decimal margin,
+        string? bottleneck)
+    {
+        var output = outputs
+            .OrderByDescending(line => line.DestinationShipmentPriority)
+            .ThenBy(line => line.ResourceId, StringComparer.Ordinal)
+            .FirstOrDefault();
+        var outputId = output?.ResourceId ?? recipe.Id;
+
+        if (isReady)
+        {
+            var prefix = recipe.Inputs.Count == 0 ? "source production" : "ready";
+            var route = output?.BestRouteId is null ? "local sale" : $"via {output.BestRouteId}";
+            return $"{prefix}: {outputId} margin {SignedMoney(margin)}; {route}";
+        }
+
+        var protectedInput = inputs
+            .Where(input => input.MissingAmount > 0 && input.ProtectedStock > 0 && input.WarehouseStock >= input.RequiredAmount)
+            .OrderBy(input => input.ResourceId, StringComparer.Ordinal)
+            .FirstOrDefault();
+        if (protectedInput is not null)
+        {
+            return $"{protectedInput.ResourceId} protected by safety stock";
+        }
+
+        var missing = inputs
+            .Where(input => input.MissingAmount > 0)
+            .OrderBy(input => input.ResourceId, StringComparer.Ordinal)
+            .FirstOrDefault();
+        if (missing is not null)
+        {
+            return $"missing {missing.ResourceId} {missing.MissingAmount}";
+        }
+
+        return bottleneck is null
+            ? "output surplus; route export needed"
+            : $"source {bottleneck} not local";
     }
 
     private PrototypeRouteContractView? SelectedAvailableContract()
@@ -1027,7 +1343,7 @@ public sealed class PrototypeSession
         return consumed;
     }
 
-    private static bool CanRunInCity(RuntimeCity city, RecipeDef recipe, ProductionReservation? reservation)
+    private bool CanRunInCity(RuntimeCity city, RecipeDef recipe, ProductionReservation? reservation)
     {
         if (recipe.Inputs.Count == 0)
         {
@@ -1037,15 +1353,15 @@ public sealed class PrototypeSession
         return recipe.Inputs.All(input => AvailableForProduction(city, input.ResourceId, reservation) >= input.Amount);
     }
 
-    private static int AvailableForProduction(RuntimeCity city, string resourceId, ProductionReservation? reservation)
+    private int AvailableForProduction(RuntimeCity city, string resourceId, ProductionReservation? reservation)
     {
-        var stock = city.CompanyWarehouse.Get(resourceId);
-        if (reservation is null || reservation.CityId != city.Id || reservation.ResourceId != resourceId)
+        var stock = ExportableWarehouseUnits(city, resourceId);
+        if (reservation is not null && reservation.CityId == city.Id && reservation.ResourceId == resourceId)
         {
-            return stock;
+            stock = Math.Max(0, stock - reservation.Amount);
         }
 
-        return Math.Max(0, stock - reservation.Amount);
+        return stock;
     }
 
     private static PopulationCohorts ApplyPopulationDelta(PopulationCohorts population, int delta)
@@ -1170,6 +1486,11 @@ public sealed class PrototypeSession
         return decimal.Round(value, 2, MidpointRounding.AwayFromZero);
     }
 
+    private static string SignedMoney(decimal value)
+    {
+        return value.ToString("+0.00;-0.00;0.00", CultureInfo.InvariantCulture);
+    }
+
     private static string PolicyAction(int shipmentPriority, int desiredStock, int marketStock, int consumptionPerTick, string mode)
     {
         var action = shipmentPriority switch
@@ -1265,4 +1586,6 @@ public sealed class PrototypeSession
     private sealed record WarehousePolicy(int SafetyStock, int ReorderPoint, bool IsOverride, string Mode);
 
     private sealed record RoutePolicy(string RouteId, IReadOnlyList<string> ReservedResources, string? PriorityResourceId);
+
+    private sealed record ProductionDestination(string CityId, string RouteId, decimal UnitPrice, int ShipmentPriority);
 }

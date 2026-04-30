@@ -20,6 +20,9 @@ var tests = new (string Name, Action Run)[]
     ("content validation rejects unknown recipe resources", ContentValidationRejectsUnknownRecipeResources),
     ("simulation bridge uses loaded content", SimulationBridgeUsesLoadedContent),
     ("prototype city specializations are deterministic", PrototypeCitySpecializationsAreDeterministic),
+    ("prototype production chain opportunities are deterministic", PrototypeProductionChainOpportunitiesAreDeterministic),
+    ("prototype production chain opportunities explain inputs and outputs", PrototypeProductionChainOpportunitiesExplainInputsAndOutputs),
+    ("prototype production chain opportunities respect warehouse reserve", PrototypeProductionChainOpportunitiesRespectWarehouseReserve),
     ("prototype session ticks deterministically", PrototypeSessionTicksDeterministically),
     ("prototype session advances all systems", PrototypeSessionAdvancesAllSystems),
     ("prototype route contracts are deterministic", PrototypeRouteContractsAreDeterministic),
@@ -471,6 +474,106 @@ static bool IsReadOnlySnapshotList(IReadOnlyList<string> values)
 {
     return values is not string[] &&
         (values is not ICollection<string> collection || collection.IsReadOnly);
+}
+
+static bool IsReadOnlySnapshotObjectList<T>(IReadOnlyList<T> values)
+{
+    return values is not T[] &&
+        (values is not ICollection<T> collection || collection.IsReadOnly);
+}
+
+static void PrototypeProductionChainOpportunitiesAreDeterministic()
+{
+    var bridge = new SimulationBridge();
+    var first = bridge.CreatePrototypeSession(20260429);
+    var second = bridge.CreatePrototypeSession(20260429);
+    var initialFingerprint = ProductionChainFingerprint(first.Current.ProductionChainOpportunities);
+
+    AssertTrue(first.Current.ProductionChainOpportunities.Count > 0, "Expected starter session to expose production chain opportunities.");
+    AssertEqual(initialFingerprint, ProductionChainFingerprint(second.Current.ProductionChainOpportunities));
+    AssertTrue(IsReadOnlySnapshotObjectList(first.Current.ProductionChainOpportunities), "Production opportunities should be exposed as read-only snapshot lists.");
+    AssertTrue(
+        first.Current.ProductionChainOpportunities.All(opportunity =>
+            IsReadOnlySnapshotObjectList(opportunity.Inputs) &&
+            IsReadOnlySnapshotObjectList(opportunity.Outputs)),
+        "Production opportunity resource lines should be exposed as read-only snapshot lists.");
+
+    var lastReadyIndex = LastIndex(first.Current.ProductionChainOpportunities, opportunity => opportunity.IsReady);
+    var firstBlockedIndex = FirstIndex(first.Current.ProductionChainOpportunities, opportunity => !opportunity.IsReady);
+    if (lastReadyIndex >= 0 && firstBlockedIndex >= 0)
+    {
+        AssertTrue(lastReadyIndex < firstBlockedIndex, "Ready production chains should sort before blocked chains.");
+    }
+
+    for (var i = 0; i < 3; i++)
+    {
+        first.AdvanceTick();
+        second.AdvanceTick();
+    }
+
+    AssertEqual(
+        ProductionChainFingerprint(first.Current.ProductionChainOpportunities),
+        ProductionChainFingerprint(second.Current.ProductionChainOpportunities));
+}
+
+static void PrototypeProductionChainOpportunitiesExplainInputsAndOutputs()
+{
+    var snapshot = new SimulationBridge().CreatePrototypeSession(424242).Current;
+    var chain = snapshot.ProductionChainOpportunities.FirstOrDefault(opportunity =>
+        opportunity.Inputs.Count > 0 &&
+        opportunity.Outputs.Count > 0);
+
+    AssertTrue(chain is not null, "Expected at least one production chain with inputs and outputs.");
+    AssertTrue(chain!.InputCost > 0, "Production chain should expose input replacement cost.");
+    AssertTrue(chain.OutputValue > 0, "Production chain should expose output value.");
+    AssertTrue(!string.IsNullOrWhiteSpace(chain.Reason), "Production chain should expose a short reason.");
+    AssertTrue(chain.Inputs.All(input => input.RequiredAmount > 0 && input.LocalUnitPrice > 0), "Production inputs should expose quantities and prices.");
+    AssertTrue(chain.Outputs.All(output => output.OutputAmount > 0 && output.LocalUnitPrice > 0), "Production outputs should expose quantities and prices.");
+    AssertTrue(
+        snapshot.ProductionChainOpportunities.Any(opportunity => opportunity.Outputs.Any(output =>
+            output.BestDestinationCityId is not null &&
+            output.BestRouteId is not null)),
+        "Expected at least one production chain output to expose destination demand.");
+}
+
+static void PrototypeProductionChainOpportunitiesRespectWarehouseReserve()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(424242);
+    var target = session.Current.ProductionChainOpportunities.FirstOrDefault(opportunity =>
+        opportunity.IsReady &&
+        opportunity.Inputs.Any(input => input.RequiredAmount > 0 &&
+            session.Current.Cities
+                .First(city => city.Id == opportunity.CityId)
+                .MarketSignals.Any(signal => signal.ResourceId == input.ResourceId && signal.DesiredStock > 0)));
+
+    AssertTrue(target is not null, "Expected at least one ready production chain with a policy-tracked input.");
+    var targetInput = target!.Inputs.First(input => input.RequiredAmount > 0 &&
+        session.Current.Cities
+            .First(city => city.Id == target.CityId)
+            .MarketSignals.Any(signal => signal.ResourceId == input.ResourceId && signal.DesiredStock > 0));
+    var previousHash = session.Current.SaveHash;
+
+    AssertTrue(
+        session.SetWarehousePolicy(target.CityId, targetInput.ResourceId, targetInput.WarehouseStock, targetInput.WarehouseStock),
+        "Expected warehouse policy override for production input to succeed.");
+    AssertTrue(session.Current.SaveHash != previousHash, "Warehouse reserve policy should remain gameplay state.");
+
+    var updated = session.Current.ProductionChainOpportunities.Single(opportunity => opportunity.Id == target.Id);
+    var updatedInput = updated.Inputs.Single(input => input.ResourceId == targetInput.ResourceId);
+    AssertTrue(!updated.IsReady, "High safety stock should block the formerly ready chain.");
+    AssertEqual(targetInput.WarehouseStock, updatedInput.ProtectedStock);
+    AssertEqual(0, updatedInput.AvailableAmount);
+    AssertTrue(updatedInput.MissingAmount >= targetInput.RequiredAmount, "Protected stock should be reported as missing input.");
+    AssertTrue(updated.Reason.Contains("protected", StringComparison.Ordinal), "Production reason should explain protected stock.");
+
+    var beforeTickWarehouse = session.Current.Cities
+        .Single(city => city.Id == target.CityId)
+        .CompanyWarehouse[targetInput.ResourceId];
+    var tick = session.AdvanceTick();
+    var afterTickWarehouse = tick.Cities
+        .Single(city => city.Id == target.CityId)
+        .CompanyWarehouse[targetInput.ResourceId];
+    AssertEqual(beforeTickWarehouse, afterTickWarehouse);
 }
 
 static void PrototypeSessionTicksDeterministically()
@@ -951,6 +1054,78 @@ static string CitySpecializationFingerprint(PrototypeSnapshot snapshot)
                 city.Specialization.Label,
                 string.Join(",", city.Specialization.AnchorResources.Order(StringComparer.Ordinal)),
                 string.Join(",", city.Specialization.OutputResources.Order(StringComparer.Ordinal)))));
+}
+
+static string ProductionChainFingerprint(IEnumerable<PrototypeProductionChainOpportunityView> opportunities)
+{
+    return string.Join("|", opportunities.Select(opportunity =>
+        string.Format(
+            CultureInfo.InvariantCulture,
+            "{0}:{1}:{2}:{3}:{4}:{5:0.00}:{6:0.00}:{7:0.00}:{8}:{9}:{10}:{11}:{12}:{13}",
+            opportunity.Id,
+            opportunity.CityId,
+            opportunity.RecipeId,
+            opportunity.IsReady ? "ready" : "blocked",
+            opportunity.MaxRunsFromWarehouse,
+            opportunity.InputCost,
+            opportunity.OutputValue,
+            opportunity.ExpectedMargin,
+            opportunity.BottleneckResourceId ?? "",
+            opportunity.MissingInputUnits,
+            opportunity.DestinationShipmentPriority,
+            opportunity.CandidateRouteId ?? "",
+            ProductionLineFingerprint(opportunity.Inputs),
+            ProductionLineFingerprint(opportunity.Outputs))));
+}
+
+static string ProductionLineFingerprint(IEnumerable<PrototypeProductionResourceLineView> lines)
+{
+    return string.Join(",", lines
+        .OrderBy(line => line.ResourceId, StringComparer.Ordinal)
+        .Select(line =>
+            string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}:{8:0.00}:{9:0.0000}:{10}:{11}:{12:0.00}:{13}",
+                line.ResourceId,
+                line.RequiredAmount,
+                line.OutputAmount,
+                line.WarehouseStock,
+                line.MarketStock,
+                line.ProtectedStock,
+                line.AvailableAmount,
+                line.MissingAmount,
+                line.LocalUnitPrice,
+                line.LocalScarcity,
+                line.BestDestinationCityId ?? "",
+                line.BestRouteId ?? "",
+                line.BestDestinationUnitPrice ?? 0m,
+                line.DestinationShipmentPriority)));
+}
+
+static int FirstIndex<T>(IReadOnlyList<T> values, Func<T, bool> predicate)
+{
+    for (var i = 0; i < values.Count; i++)
+    {
+        if (predicate(values[i]))
+        {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
+static int LastIndex<T>(IReadOnlyList<T> values, Func<T, bool> predicate)
+{
+    for (var i = values.Count - 1; i >= 0; i--)
+    {
+        if (predicate(values[i]))
+        {
+            return i;
+        }
+    }
+
+    return -1;
 }
 
 static string PolicyFingerprint(PrototypeSnapshot snapshot)

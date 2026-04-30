@@ -32,6 +32,7 @@ public partial class BootstrapPanel : Control
     private RichTextLabel? _cities;
     private RichTextLabel? _inspector;
     private RichTextLabel? _warnings;
+    private RichTextLabel? _productionChains;
     private RichTextLabel? _policy;
     private RichTextLabel? _testProbe;
     private SpinBox? _seedInput;
@@ -234,6 +235,10 @@ public partial class BootstrapPanel : Control
         AddMapModeButton(mapModes, "Profit", PrototypeMapMode.Profit);
         AddMapModeButton(mapModes, "Demand", PrototypeMapMode.Demand);
         sidebar.AddChild(CreateSectionPanel("Map Mode", mapModeStack));
+
+        _productionChains = CreateLog();
+        _productionChains.CustomMinimumSize = new Vector2(0, layout.WarningHeight);
+        sidebar.AddChild(CreateSectionPanel("Production Chains", _productionChains));
 
         var contractStack = CreateSectionStack();
         contractStack.AddChild(CreateSectionHint("Contracts are concrete logistics orders: source warehouse stock, destination demand, capacity, transport cost, and expected net."));
@@ -470,6 +475,7 @@ public partial class BootstrapPanel : Control
         UpdateContractControl();
         UpdateRoutePolicyControl();
         UpdateWarnings();
+        UpdateProductionChains();
         UpdatePolicyControls();
         UpdateWarehousePolicyControl();
         UpdatePolicyPanel();
@@ -501,6 +507,7 @@ public partial class BootstrapPanel : Control
         _cities = null;
         _inspector = null;
         _warnings = null;
+        _productionChains = null;
         _policy = null;
         _testProbe = null;
         _seedInput = null;
@@ -761,9 +768,11 @@ public partial class BootstrapPanel : Control
         var cityContracts = _snapshot.AvailableContracts
             .Where(contract => contract.FromNode == city.Id || contract.ToNode == city.Id)
             .ToArray();
+        var topChain = TopProductionChainForCity(city.Id);
 
         _inspector.AppendText($"{city.Name} ({CityKindLabel(CityKindFor(city.Id))})\n");
         _inspector.AppendText($"Population {city.Population} | level {city.Level}\n");
+        _inspector.AppendText($"City role: {city.Specialization.Label} | {city.Specialization.Rationale}\n");
         _inspector.AppendText($"Market Pressure: supply {city.SupplySatisfaction:0.00}, unmet demand {SupplyPressure(city):0.00}\n");
         _inspector.AppendText($"Local prices read market stock: {StockSummary(city.MarketStock)}\n");
         _inspector.AppendText($"Company warehouse: {StockSummary(city.CompanyWarehouse)}\n");
@@ -773,6 +782,9 @@ public partial class BootstrapPanel : Control
         _inspector.AppendText(cityContracts.Length > 0
             ? $"Route Contract options: {cityContracts.Length}; best {ContractBrief(cityContracts[0])}\n"
             : "Route Contract options: none currently available\n");
+        _inspector.AppendText(topChain is null
+            ? "Production Chains: none currently available\n"
+            : $"Top chain: {ProductionChainLine(topChain)}\n");
         _inspector.AppendText(pricePressure.Length > 0
             ? $"Warehouse Policy: {string.Join(", ", pricePressure)}\n"
             : "Local market pressure: no tracked needs\n");
@@ -900,6 +912,63 @@ public partial class BootstrapPanel : Control
         {
             _warnings.AppendText("No high-priority bottlenecks this tick.\n");
         }
+    }
+
+    private void UpdateProductionChains()
+    {
+        if (_snapshot is null || _productionChains is null)
+        {
+            return;
+        }
+
+        _productionChains.Clear();
+
+        var chains = _snapshot.ProductionChainOpportunities
+            .Where(chain => _selectedCityId is null || string.Equals(chain.CityId, _selectedCityId, StringComparison.Ordinal))
+            .Take(5)
+            .ToArray();
+
+        if (chains.Length == 0)
+        {
+            _productionChains.AppendText("No production chains available.\n");
+            return;
+        }
+
+        _productionChains.AppendText(_selectedCityId is null
+            ? "Top network chains:\n"
+            : $"Chains for {CityName(_selectedCityId)}:\n");
+        foreach (var chain in chains)
+        {
+            _productionChains.AppendText($"{ProductionChainLine(chain)}\n");
+        }
+    }
+
+    private string ProductionChainLine(PrototypeProductionChainOpportunityView chain)
+    {
+        var input = chain.Inputs
+            .OrderByDescending(line => line.MissingAmount)
+            .ThenBy(line => line.ResourceId, StringComparer.Ordinal)
+            .FirstOrDefault();
+        var output = chain.Outputs
+            .OrderByDescending(line => line.DestinationShipmentPriority)
+            .ThenBy(line => line.ResourceId, StringComparer.Ordinal)
+            .FirstOrDefault();
+        var inputText = input is null
+            ? "source"
+            : $"{ResourceLabel(input.ResourceId)} {input.AvailableAmount}/{input.RequiredAmount}";
+        var outputText = output is null
+            ? chain.BuildingType
+            : ResourceLabel(output.ResourceId);
+        var destination = output?.BestDestinationCityId is null
+            ? "local"
+            : $"to {CityName(output.BestDestinationCityId)}";
+        return $"{RecipeLabel(chain.RecipeId)} | {inputText} -> {outputText} {destination} | {FormatSignedMoney(chain.ExpectedMargin)} | {chain.Reason}";
+    }
+
+    private PrototypeProductionChainOpportunityView? TopProductionChainForCity(string cityId)
+    {
+        return _snapshot?.ProductionChainOpportunities
+            .FirstOrDefault(chain => string.Equals(chain.CityId, cityId, StringComparison.Ordinal));
     }
 
     private void UpdateWarehousePolicyControl()
@@ -1293,6 +1362,7 @@ public partial class BootstrapPanel : Control
             .OrderByDescending(contract => contract.ShipmentPriority)
             .ThenByDescending(contract => contract.ExpectedNet)
             .FirstOrDefault();
+        var bestChain = _snapshot.ProductionChainOpportunities.FirstOrDefault();
         var policyCity = PolicyFocusCity();
         var currentLedger = _snapshot.Ledger.Where(entry => entry.Tick == _snapshot.Tick).ToArray();
 
@@ -1307,6 +1377,9 @@ public partial class BootstrapPanel : Control
         _testProbe.AppendText(bestContract is null
             ? "Route Contract: none\n"
             : $"Route Contract: P{bestContract.ShipmentPriority} {ResourceLabel(bestContract.ResourceId)} x{bestContract.Units}, net {FormatSignedMoney(bestContract.ExpectedNet)}\n");
+        _testProbe.AppendText(bestChain is null
+            ? "Production Chains: none\n"
+            : $"Production Chains: {RecipeLabel(bestChain.RecipeId)} at {bestChain.CityName}, {FormatSignedMoney(bestChain.ExpectedMargin)}, {bestChain.Reason}\n");
     }
 
     private static PanelContainer WrapPanel(Control child, bool horizontalExpand = true, float minimumWidth = 0.0f)
@@ -2149,6 +2222,11 @@ public partial class BootstrapPanel : Control
         return words.Length == 0
             ? resourceId
             : string.Join(" ", words.Select(word => CultureInfo.InvariantCulture.TextInfo.ToTitleCase(word.ToLowerInvariant())));
+    }
+
+    private static string RecipeLabel(string recipeId)
+    {
+        return ResourceLabel(recipeId);
     }
 
     private static string FormatSignedMoney(decimal value)

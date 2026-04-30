@@ -2,14 +2,14 @@
 
 ## Status
 
-Design ready; waiting on Stage 2 city specialization surfaces before gameplay code edits.
+Implemented bounded read-only production-chain opportunity slice.
 
 ## Current Notes
 
-- Start from `agent/mvp-roadmap-execution`.
-- Focus on player-readable production chain opportunities.
-- Coordinate dependencies on city roles and route operations.
-- This pass intentionally changes only this communication file. Gameplay implementation should wait until Stage 2 settles shared city/bridge surfaces.
+- Started from synced `agent/mvp-roadmap-execution`.
+- Focused on player-readable production chain opportunities.
+- Consumed Stage 2 city specialization as a role hint only; empty `OutputResources` remains default/no role bonus.
+- Kept the first slice read-only: no production focus command, no save format change, and no ADR required.
 
 ## Findings
 
@@ -88,7 +88,37 @@ The first implemented slice should not add save state. Selecting or pinning a pr
 - Stage 6 dependency: goal-loop objectives may use production-chain readiness, margin, or served output demand. Keep opportunity ids stable enough for objective summaries.
 - Save/load: read-only opportunity views require no save change. Any production focus, pinned chain, build order, or recurring production order must be treated as gameplay state and reviewed for save/hash impact.
 
-### 1-day implementation slice after Stage 2
+### Implemented Slice
+
+- Added `PrototypeProductionChainOpportunityView` and `PrototypeProductionResourceLineView` to the Godot-free bridge snapshot.
+- Derived production opportunities deterministically from current city warehouse stock, market prices, recipe inputs/outputs, warehouse safety reserves, route policies, and destination demand.
+- Exposed input availability, protected stock, missing units, local prices, output value, destination route/demand hint, expected margin, bottleneck, ready/blocked state, stable score, and short reason text.
+- Aligned actual production execution with the opportunity view: production now respects warehouse safety reserves instead of consuming protected stock.
+- Added a compact Godot `Production Chains` sidebar section and selected-city `Top chain` inspector line.
+- Updated interaction smoke and visual QA to assert the Production Chains surface is present.
+- Added deterministic tests for opportunity ordering/fingerprints, input/output explanations, destination demand, and warehouse reserve behavior.
+
+## Verification
+
+- `powershell -ExecutionPolicy Bypass -File .\tools\build.ps1`: passed with 0 warnings and 0 errors.
+- `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1`: passed with 40/40 console tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`; latest visual smoke frame `artifacts/godot-smoke/visual-smoke-20260430-15420800000002.png`.
+- `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1`: passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25.
+- `powershell -ExecutionPolicy Bypass -File .\tools\visual-qa.ps1`: passed with 15 captures in `artifacts/godot-visual-qa/visual-qa-20260430-154226`.
+
+## Review
+
+- Delegated review found one P1 blocker: opportunities respected protected warehouse stock, but production execution could still consume that protected stock. Fixed by routing production availability through `ExportableWarehouseUnits`, and extended the reserve test to advance a tick.
+- Delegated review also noted a P2 risk: destination margin and `CandidateRouteId` are route-demand hints until Stage 4 recurring route operations can realize those flows. Kept the fields read-only and documented Stage 4 as the cleanup point.
+- Follow-up delegated review returned GO after the P1 fix.
+
+## Handoff Notes
+
+- Stage 4 can use `CandidateRouteId`, destination priority, and expected margin as read-only demand hints, but recurring route-operation choices still need a save-path decision before those hints become executable orders.
+- Stage 5 can reuse the opportunity IDs and score/margin fields for NPC candidate scoring without scraping Godot UI text.
+- Stage 6 can use production-chain readiness and bottleneck reason as objective-summary context, but no objective state is persisted yet.
+- The opportunity calculator currently lives in `PrototypeSession`; move it into a pure economy/logistics service if Stage 5 begins sharing the scoring logic heavily.
+
+### Original 1-day implementation slice after Stage 2
 
 1. Add read-only bridge records and `PrototypeSnapshot.ProductionChainOpportunities`.
 2. Implement deterministic opportunity calculation from current cities, recipes, prices, market signals, warehouse reserves, route policies, and Stage 2 city role data if present.

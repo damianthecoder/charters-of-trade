@@ -43,6 +43,7 @@ public partial class VisualQaRunner : Control
             AssertQa(!AnyVisibleTextContains(uiRoot, "Startup failed"), $"Seed {seed} rendered the startup failure view.");
             AssertQa(AnyVisibleTextContains(uiRoot, $"Seed {seed}"), $"Seed {seed} was not visible in the System Test Bench.");
             AssertQa(AnyVisibleTextContains(uiRoot, "Warehouse Policy"), "Warehouse Policy panel title was not present.");
+            AssertQa(AnyVisibleTextContains(uiRoot, "Production Chains"), "Production Chains panel title was not present.");
 
             var sidebar = FindRequired<ScrollContainer>(uiRoot);
             var routePolicyOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "RoutePolicyResourceOptions", StringComparison.Ordinal));
