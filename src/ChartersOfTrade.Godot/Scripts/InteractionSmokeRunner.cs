@@ -6,7 +6,8 @@ using Godot;
 public partial class InteractionSmokeRunner : Control
 {
     private const int Seed = 424242;
-    private static readonly Vector2I SmokeWindowSize = new(1366, 768);
+    private const int ExpectedFinalTick = 18;
+    private static readonly Vector2I SmokeWindowSize = new(1920, 1080);
 
     public override async void _Ready()
     {
@@ -42,14 +43,20 @@ public partial class InteractionSmokeRunner : Control
 
         var map = FindRequired<PrototypeMapView>(uiRoot);
         AssertSmoke(map.Size.X > 200 && map.Size.Y > 200, $"Map view did not lay out to an interactive size: {map.Size}.");
+        AssertSmoke(map.Size.X >= 1000 && map.Size.Y >= 700, $"Full HD map area was too small: {map.Size}.");
 
         var routesButton = FindButton(uiRoot, "Routes");
         var profitButton = FindButton(uiRoot, "Profit");
         var demandButton = FindButton(uiRoot, "Demand");
         var advanceButton = FindButton(uiRoot, "Advance Tick");
         var runFiveButton = FindButton(uiRoot, "Run 5");
+        var runTwelveButton = FindButton(uiRoot, "Run 12");
+        var resetSeedButton = FindButton(uiRoot, "Reset Seed");
         var selectContractButton = FindButton(uiRoot, "Select Contract");
 
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "System Test Bench"), "System Test Bench was not visible.");
+        AssertSmoke(!runTwelveButton.Disabled, "Run 12 was disabled.");
+        AssertSmoke(!resetSeedButton.Disabled, "Reset Seed was disabled.");
         AssertSmoke(GetMetricValue(uiRoot, "Tick") == "0", "Initial tick metric was not zero.");
 
         await PressButtonAsync(profitButton);
@@ -84,10 +91,13 @@ public partial class InteractionSmokeRunner : Control
         await PressButtonAsync(runFiveButton);
         AssertSmoke(GetMetricValue(uiRoot, "Tick") == "6", "Run 5 did not advance the tick metric to 6.");
 
+        await PressButtonAsync(runTwelveButton);
+        AssertSmoke(GetMetricValue(uiRoot, "Tick") == ExpectedFinalTick.ToString(), "Run 12 did not advance the tick metric to 18.");
+
         await WaitFrames(6);
         AssertViewportHasVisualContent();
 
-        GD.Print($"INTERACTION_SMOKE route={targetRoute.Id} city={targetCity.Id} contractChoice={contractIndex} tick=6");
+        GD.Print($"INTERACTION_SMOKE route={targetRoute.Id} city={targetCity.Id} contractChoice={contractIndex} tick={ExpectedFinalTick}");
     }
 
     private Control LoadMainScene()
@@ -143,7 +153,7 @@ public partial class InteractionSmokeRunner : Control
     {
         if (string.Equals(DisplayServer.GetName(), "headless", StringComparison.OrdinalIgnoreCase))
         {
-            AssertSmoke(GetMetricValue(this, "Tick") == "6", "Headless smoke reached visual check before post-interaction UI updated.");
+            AssertSmoke(GetMetricValue(this, "Tick") == ExpectedFinalTick.ToString(), "Headless smoke reached visual check before post-interaction UI updated.");
             AssertSmoke(AnyVisibleTextContains(this, "Cashflow"), "Headless smoke did not retain visible KPI content.");
             return;
         }
