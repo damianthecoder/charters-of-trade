@@ -418,9 +418,10 @@ public partial class BootstrapPanel : Control
             .Take(4)
             .ToArray();
         var pricePressure = city.MarketSignals
-            .OrderByDescending(price => price.Scarcity)
+            .OrderByDescending(signal => signal.ShipmentPriority)
+            .ThenByDescending(signal => signal.Scarcity)
             .Take(3)
-            .Select(signal => $"{ResourceLabel(signal.ResourceId)} {signal.Price:0.00}, stock {signal.MarketStock}/{signal.DesiredStock}, {signal.Reason}")
+            .Select(signal => $"{ResourceLabel(signal.ResourceId)} {signal.MarketStock}/{signal.DesiredStock}, safety {signal.SafetyStock}, reorder {signal.ReorderPoint}, {signal.PolicyAction}")
             .ToArray();
         var routeLines = connectedRoutes
             .Take(4)
@@ -428,8 +429,6 @@ public partial class BootstrapPanel : Control
             .ToArray();
         var cityContracts = _snapshot.AvailableContracts
             .Where(contract => contract.FromNode == city.Id || contract.ToNode == city.Id)
-            .OrderByDescending(contract => contract.ExpectedNet)
-            .ThenBy(contract => contract.Id, StringComparer.Ordinal)
             .ToArray();
 
         _inspector.AppendText($"{city.Name} ({CityKindLabel(CityKindFor(city.Id))})\n");
@@ -475,8 +474,6 @@ public partial class BootstrapPanel : Control
         var routeDemand = RouteDemandSignal(route);
         var routeContracts = _snapshot.AvailableContracts
             .Where(contract => contract.RouteId == route.Id)
-            .OrderByDescending(contract => contract.ExpectedNet)
-            .ThenBy(contract => contract.Id, StringComparer.Ordinal)
             .ToArray();
         var selectedContract = SelectedContract();
         var selectedRouteContract = selectedContract is not null && selectedContract.RouteId == route.Id
@@ -531,7 +528,7 @@ public partial class BootstrapPanel : Control
             var pressure = TopPressureSignal(city);
             signals.Add(pressure is null
                 ? $"! {city.Name}: unmet demand, supply {city.SupplySatisfaction:0.00}"
-                : $"! {city.Name}: {ResourceLabel(pressure.ResourceId)} {pressure.MarketStock}/{pressure.DesiredStock}, {pressure.Reason}");
+                : $"! {city.Name}: {ResourceLabel(pressure.ResourceId)} {pressure.MarketStock}/{pressure.ReorderPoint}, {pressure.PolicyAction}");
         }
 
         foreach (var route in _snapshot.Routes
@@ -773,8 +770,6 @@ public partial class BootstrapPanel : Control
 
         _visibleContracts = _snapshot.AvailableContracts
             .Where(ContractAppliesToCurrentSelection)
-            .OrderByDescending(contract => contract.ExpectedNet)
-            .ThenBy(contract => contract.Id, StringComparer.Ordinal)
             .ToArray();
 
         var invalidContractId = _invalidContractId;
@@ -974,17 +969,17 @@ public partial class BootstrapPanel : Control
     private string ContractOptionLabel(PrototypeRouteContractView contract, int index)
     {
         var rank = index == 0 ? "Best" : $"#{index + 1}";
-        return $"{rank}: {ResourceLabel(contract.ResourceId)} | {CityName(contract.FromNode)} -> {CityName(contract.ToNode)} | {FormatSignedMoney(contract.ExpectedNet)} net";
+        return $"{rank}: P{contract.ShipmentPriority} {ResourceLabel(contract.ResourceId)} x{contract.Units} | {CityName(contract.FromNode)} -> {CityName(contract.ToNode)} | {FormatSignedMoney(contract.ExpectedNet)} net";
     }
 
     private string ContractSummary(PrototypeRouteContractView contract)
     {
-        return $"{ResourceLabel(contract.ResourceId)} from {CityName(contract.FromNode)} to {CityName(contract.ToNode)} on {RouteDisplayName(contract.RouteId)}; revenue {contract.ExpectedRevenue.ToString("0.00", CultureInfo.InvariantCulture)}, cost {contract.TransportCost.ToString("0.00", CultureInfo.InvariantCulture)}, net {FormatSignedMoney(contract.ExpectedNet)}, capacity {contract.CapacityPerDay}/day";
+        return $"{ResourceLabel(contract.ResourceId)} x{contract.Units} from {CityName(contract.FromNode)} to {CityName(contract.ToNode)} on {RouteDisplayName(contract.RouteId)}; {contract.PolicyAction}, priority {contract.ShipmentPriority}, revenue {contract.ExpectedRevenue.ToString("0.00", CultureInfo.InvariantCulture)}, cost {contract.TransportCost.ToString("0.00", CultureInfo.InvariantCulture)}, net {FormatSignedMoney(contract.ExpectedNet)}, capacity {contract.CapacityPerDay}/day";
     }
 
     private string ContractBrief(PrototypeRouteContractView contract)
     {
-        return $"{ResourceLabel(contract.ResourceId)} {CityName(contract.FromNode)} -> {CityName(contract.ToNode)} on {contract.RouteId} ({FormatSignedMoney(contract.ExpectedNet)} net)";
+        return $"P{contract.ShipmentPriority} {ResourceLabel(contract.ResourceId)} x{contract.Units} {CityName(contract.FromNode)} -> {CityName(contract.ToNode)} on {contract.RouteId} ({FormatSignedMoney(contract.ExpectedNet)} net)";
     }
 
     private PrototypeRouteContractView? SelectedContract()
@@ -1058,7 +1053,8 @@ public partial class BootstrapPanel : Control
     {
         return city.MarketSignals
             .Where(signal => signal.DesiredStock > 0 && signal.Scarcity > 0.10)
-            .OrderByDescending(signal => signal.Scarcity)
+            .OrderByDescending(signal => signal.ShipmentPriority)
+            .ThenByDescending(signal => signal.Scarcity)
             .ThenBy(signal => signal.ResourceId, StringComparer.Ordinal)
             .FirstOrDefault();
     }
@@ -1068,7 +1064,7 @@ public partial class BootstrapPanel : Control
         var pressure = TopPressureSignal(city);
         return pressure is null
             ? $"stable demand, warehouse {StockUnits(city.CompanyWarehouse)}"
-            : $"{ResourceLabel(pressure.ResourceId)} {pressure.MarketStock}/{pressure.DesiredStock}, unmet {SupplyPressure(city):0.00}";
+            : $"{ResourceLabel(pressure.ResourceId)} {pressure.MarketStock}/{pressure.ReorderPoint}, {pressure.PolicyAction}, unmet {SupplyPressure(city):0.00}";
     }
 
     private static double SupplyPressure(PrototypeCityView city)

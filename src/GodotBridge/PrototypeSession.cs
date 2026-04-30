@@ -28,7 +28,11 @@ public sealed record PrototypeMarketSignal(
     int WarehouseStock,
     int DesiredStock,
     int ConsumptionPerTick,
-    string Reason);
+    int SafetyStock,
+    int ReorderPoint,
+    int ShipmentPriority,
+    string Reason,
+    string PolicyAction);
 
 public sealed record PrototypeLedgerEntry(
     int Tick,
@@ -46,7 +50,10 @@ public sealed record PrototypeRouteContractView(
     decimal ExpectedRevenue,
     decimal TransportCost,
     decimal ExpectedNet,
-    int CapacityPerDay);
+    int CapacityPerDay,
+    int Units,
+    int ShipmentPriority,
+    string PolicyAction);
 
 public sealed record PrototypeSnapshot(
     int Tick,
@@ -247,18 +254,26 @@ public sealed class PrototypeSession
         {
             var otherId = route.FromNode == charter.Id ? route.ToNode : route.FromNode;
             var source = _cities.First(city => city.Id == otherId);
-            var candidate = source.CompanyWarehouse.Stock
-                .Where(kvp => kvp.Value > 0 && needsByResource.ContainsKey(kvp.Key))
-                .OrderByDescending(kvp => NeedScarcity(charter, needsByResource[kvp.Key]))
+            var candidates = source.CompanyWarehouse.Stock
+                .Select(kvp => new
+                {
+                    kvp.Key,
+                    Exportable = ExportableWarehouseUnits(source, kvp.Key),
+                    Priority = ShipmentPriority(charter, kvp.Key)
+                })
+                .Where(kvp => kvp.Exportable > 0 && needsByResource.ContainsKey(kvp.Key))
+                .OrderByDescending(kvp => kvp.Priority)
+                .ThenByDescending(kvp => NeedScarcity(charter, needsByResource[kvp.Key]))
                 .ThenBy(kvp => kvp.Key, StringComparer.Ordinal)
-                .FirstOrDefault();
+                .ToArray();
 
-            if (string.IsNullOrWhiteSpace(candidate.Key))
+            if (candidates.Length == 0)
             {
                 continue;
             }
 
-            var units = Math.Min(Math.Min(candidate.Value, 3), Math.Max(1, route.CapacityPerDay / 4));
+            var candidate = candidates[0];
+            var units = Math.Min(Math.Min(candidate.Exportable, 3), Math.Max(1, route.CapacityPerDay / 4));
             if (!source.CompanyWarehouse.TryRemove(candidate.Key, units))
             {
                 continue;
@@ -287,7 +302,7 @@ public sealed class PrototypeSession
             return 0m;
         }
 
-        var units = Math.Min(source.CompanyWarehouse.Get(contract.ResourceId), ContractUnits(route));
+        var units = Math.Min(ExportableWarehouseUnits(source, contract.ResourceId), Math.Min(contract.Units, ContractUnits(route)));
         if (units <= 0 || !source.CompanyWarehouse.TryRemove(contract.ResourceId, units))
         {
             return 0m;
@@ -404,13 +419,14 @@ public sealed class PrototypeSession
                 .Where(kvp => kvp.Value > 0 && needsByResource.ContainsKey(kvp.Key))
                 .OrderBy(kvp => kvp.Key, StringComparer.Ordinal))
             {
-                var units = Math.Min(stock.Value, ContractUnits(route));
+                var units = Math.Min(ExportableWarehouseUnits(source, stock.Key), ContractUnits(route));
                 if (units <= 0)
                 {
                     continue;
                 }
 
                 prices.TryGetValue(stock.Key, out var price);
+                var priority = ShipmentPriority(charter, stock.Key);
                 var expectedRevenue = decimal.Round(price * units, 2, MidpointRounding.AwayFromZero);
                 var transportCost = decimal.Round(route.CostPerUnit * units, 2, MidpointRounding.AwayFromZero);
                 contracts.Add(new PrototypeRouteContractView(
@@ -422,12 +438,16 @@ public sealed class PrototypeSession
                     expectedRevenue,
                     transportCost,
                     expectedRevenue - transportCost,
-                    route.CapacityPerDay));
+                    route.CapacityPerDay,
+                    units,
+                    priority,
+                    PolicyAction(charter, stock.Key)));
             }
         }
 
         return contracts
-            .OrderByDescending(contract => contract.ExpectedNet)
+            .OrderByDescending(contract => contract.ShipmentPriority)
+            .ThenByDescending(contract => contract.ExpectedNet)
             .ThenBy(contract => contract.Id, StringComparer.Ordinal)
             .ToArray();
     }
@@ -453,6 +473,9 @@ public sealed class PrototypeSession
             prices.TryGetValue(resource.Id, out var price);
             var desiredStock = Math.Max(0, need?.DesiredStock ?? 0);
             var consumption = Math.Max(0, need?.ConsumptionPerTick ?? 0);
+            var safetyStock = SafetyStockFor(need);
+            var reorderPoint = ReorderPointFor(need);
+            var shipmentPriority = ShipmentPriority(marketStock, desiredStock, safetyStock, reorderPoint);
             signals.Add(new PrototypeMarketSignal(
                 resource.Id,
                 price?.Price ?? resource.BasePrice,
@@ -461,11 +484,16 @@ public sealed class PrototypeSession
                 warehouseStock,
                 desiredStock,
                 consumption,
-                MarketReason(marketStock, warehouseStock, desiredStock, consumption, price?.Scarcity ?? 0)));
+                safetyStock,
+                reorderPoint,
+                shipmentPriority,
+                MarketReason(marketStock, warehouseStock, desiredStock, consumption, price?.Scarcity ?? 0, safetyStock, reorderPoint),
+                PolicyAction(shipmentPriority, desiredStock, marketStock, consumption)));
         }
 
         return signals
-            .OrderByDescending(signal => signal.Scarcity)
+            .OrderByDescending(signal => signal.ShipmentPriority)
+            .ThenByDescending(signal => signal.Scarcity)
             .ThenBy(signal => signal.ResourceId, StringComparer.Ordinal)
             .ToArray();
     }
@@ -494,7 +522,7 @@ public sealed class PrototypeSession
             return null;
         }
 
-        var amount = Math.Min(source.CompanyWarehouse.Get(contract.ResourceId), ContractUnits(route));
+        var amount = Math.Min(ExportableWarehouseUnits(source, contract.ResourceId), ContractUnits(route));
         return amount <= 0 ? null : new ProductionReservation(source.Id, contract.ResourceId, amount);
     }
 
@@ -575,9 +603,91 @@ public sealed class PrototypeSession
         return Math.Clamp((need.DesiredStock - city.Market.Get(need.ResourceId)) / (double)Math.Max(1, need.DesiredStock), 0, 1);
     }
 
+    private int ShipmentPriority(RuntimeCity city, string resourceId)
+    {
+        var need = NeedFor(resourceId);
+        return ShipmentPriority(
+            city.Market.Get(resourceId),
+            Math.Max(0, need?.DesiredStock ?? 0),
+            SafetyStockFor(need),
+            ReorderPointFor(need));
+    }
+
+    private string PolicyAction(RuntimeCity city, string resourceId)
+    {
+        var need = NeedFor(resourceId);
+        return PolicyAction(ShipmentPriority(city, resourceId), Math.Max(0, need?.DesiredStock ?? 0), city.Market.Get(resourceId), Math.Max(0, need?.ConsumptionPerTick ?? 0));
+    }
+
+    private int ExportableWarehouseUnits(RuntimeCity city, string resourceId)
+    {
+        return Math.Max(0, city.CompanyWarehouse.Get(resourceId) - WarehouseReserveFor(city, resourceId));
+    }
+
+    private int WarehouseReserveFor(RuntimeCity city, string resourceId)
+    {
+        var need = NeedFor(resourceId);
+        if (need is null)
+        {
+            return 0;
+        }
+
+        return Math.Min(city.CompanyWarehouse.Get(resourceId), SafetyStockFor(need));
+    }
+
+    private MarketNeed? NeedFor(string resourceId)
+    {
+        return _needs.FirstOrDefault(need => string.Equals(need.ResourceId, resourceId, StringComparison.Ordinal));
+    }
+
     private static int ContractUnits(TradeRoute route)
     {
         return Math.Max(1, Math.Min(3, route.CapacityPerDay / 4));
+    }
+
+    private static int SafetyStockFor(MarketNeed? need)
+    {
+        if (need is null)
+        {
+            return 0;
+        }
+
+        return Math.Max(need.ConsumptionPerTick * 2, (int)Math.Ceiling(need.DesiredStock * 0.25));
+    }
+
+    private static int ReorderPointFor(MarketNeed? need)
+    {
+        if (need is null)
+        {
+            return 0;
+        }
+
+        return Math.Max(SafetyStockFor(need) + need.ConsumptionPerTick, (int)Math.Ceiling(need.DesiredStock * 0.50));
+    }
+
+    private static int ShipmentPriority(int marketStock, int desiredStock, int safetyStock, int reorderPoint)
+    {
+        if (desiredStock <= 0)
+        {
+            return 0;
+        }
+
+        if (marketStock <= 0)
+        {
+            return 4;
+        }
+
+        if (marketStock < safetyStock)
+        {
+            return 3;
+        }
+
+        if (marketStock < reorderPoint)
+        {
+            return 2;
+        }
+
+        return marketStock < desiredStock ? 1 : 0;
     }
 
     public static int ConsumeNeeds(Inventory market, IEnumerable<MarketNeed> needs)
@@ -642,7 +752,21 @@ public sealed class PrototypeSession
         return decimal.Round(value, 2, MidpointRounding.AwayFromZero);
     }
 
-    private static string MarketReason(int marketStock, int warehouseStock, int desiredStock, int consumptionPerTick, double scarcity)
+    private static string PolicyAction(int shipmentPriority, int desiredStock, int marketStock, int consumptionPerTick)
+    {
+        return shipmentPriority switch
+        {
+            4 => "emergency shipment",
+            3 => "protect safety stock",
+            2 => "reorder now",
+            1 => "top up when capacity allows",
+            _ => desiredStock > 0 && consumptionPerTick > 0 && marketStock >= desiredStock + consumptionPerTick * 2
+                ? "surplus; export above target"
+                : "hold"
+        };
+    }
+
+    private static string MarketReason(int marketStock, int warehouseStock, int desiredStock, int consumptionPerTick, double scarcity, int safetyStock, int reorderPoint)
     {
         if (desiredStock <= 0)
         {
@@ -659,6 +783,16 @@ public sealed class PrototypeSession
         if (consumptionPerTick > 0 && marketStock < consumptionPerTick)
         {
             return $"critical; less than one tick of demand";
+        }
+
+        if (marketStock < safetyStock)
+        {
+            return $"below safety stock {safetyStock}";
+        }
+
+        if (marketStock < reorderPoint)
+        {
+            return $"below reorder point {reorderPoint}";
         }
 
         if (marketStock < desiredStock)

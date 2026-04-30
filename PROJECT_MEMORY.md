@@ -2,7 +2,7 @@
 
 ## Current Goal
 
-Build the next P0 vertical-slice layer on top of merged route contracts: the `agent/economy-depth-pass` branch starts from synced `origin/main` and adds first-pass economy depth through stronger local price pressure, per-city market signals, visible shortage reasons, and Godot inspector/warning copy that explains what each city lacks. The next step is to continue from this synced branch into logistics/warehouse policies.
+Build the next P0 vertical-slice layer on top of merged route contracts and economy pressure: `agent/logistics-warehouse-policies` branches from synced `agent/economy-depth-pass` and adds first-pass warehouse policies, including safety stock, reorder points, shipment priority, source export reserves, and Godot UI copy that explains why a route contract is urgent. The next step is to prepare this stacked branch for review or continue into deeper warehouse automation.
 
 ## Latest Decisions
 
@@ -38,7 +38,7 @@ Build the next P0 vertical-slice layer on top of merged route contracts: the `ag
 - `AI.Company`: utility scorer for expansion/trade opportunities.
 - `Persistence.Core`: save game DTOs, JSON serialization, save validation, stable state hash, and pending route contract id support.
 - `Content.Core`: JSON content loader, validation, and canonical content hash for P0 resources/recipes.
-- `GodotBridge`: dependency-free bridge facade plus `PrototypeSession`, which runs a deterministic P0 loop across content, world, economy, logistics, route contracts, city growth, AI, persistence hashing, and per-city market pressure signals.
+- `GodotBridge`: dependency-free bridge facade plus `PrototypeSession`, which runs a deterministic P0 loop across content, world, economy, logistics, route contracts, city growth, AI, persistence hashing, per-city market pressure signals, and lightweight warehouse policy signals.
 - `ChartersOfTrade.Godot`: Godot .NET project with a `Main.tscn` prototype shell driven by `BootstrapPanel.cs`; it renders terrain, settlement nodes, route lines, KPI metrics, city summary, ledger, tick controls, city/route selection, hover states, route cash labels, animated route pulses, supply rings, route/city warning marks, city type stamps, Routes/Profit/Demand map modes, polished route contract controls, priority signals, and a contextual inspector. `InteractionSmoke.tscn` loads the real scene and exercises expected user actions headlessly.
 - `Tests`: custom console test runner for determinism, terrain-sensitive world hashes, content validation, prototype ticks, route contracts, declared consumption, save validation, save/load, economy, AI, and Godot interaction smoke; latest Windows run passed 18/18 plus `INTERACTION_SMOKE PASS`.
 - `Benchmarks`: console runner reporting seed-level playability metrics plus time-to-profit, bankruptcy frequency, post-run cash, AI move, and unmet demand.
@@ -81,6 +81,7 @@ Build the next P0 vertical-slice layer on top of merged route contracts: the `ag
 - Added Godot interaction smoke tooling in `InteractionSmokeRunner.cs` and `InteractionSmoke.tscn`; `tools/test.ps1` now runs this smoke path instead of only starting `Main.tscn`.
 - Stabilized Windows interaction smoke after verification: increased the Godot frame budget, read `RichTextLabel.GetParsedText()` for appended inspector text, and used a headless-safe post-interaction UI assertion instead of sampling a dummy viewport texture.
 - Economy depth pass started on `agent/economy-depth-pass` from synced `origin/main`: local prices now react to stockout, near-term coverage, surplus, and perishability; `PrototypeCityView` exposes `PrototypeMarketSignal`; Godot city/route inspectors and priority signals show local shortage reasons instead of only charter-town pressure.
+- Logistics/warehouse policy pass started on `agent/logistics-warehouse-policies` from synced `agent/economy-depth-pass`: `PrototypeMarketSignal` now includes safety stock, reorder point, shipment priority, and policy action; automatic logistics and route contracts prioritize urgent destination needs and avoid exporting source warehouse stock below safety reserve.
 
 ## Tests
 
@@ -92,6 +93,7 @@ Build the next P0 vertical-slice layer on top of merged route contracts: the `ag
 - Visual smoke capture passed with Godot movie maker at `artifacts/godot-smoke/visual-smoke00000002.png`; the rendered frame is nonblank, shows Routes/Profit/Demand buttons, city stamps, routes, KPIs, and an active route contract dropdown.
 - Windows verification after smoke stabilization: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 18/18 tests and `INTERACTION_SMOKE PASS`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.6967, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 - Economy depth branch verification: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 20/20 tests and `INTERACTION_SMOKE PASS`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.6967, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
+- Logistics/warehouse policy branch verification: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 22/22 tests and `INTERACTION_SMOKE PASS`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7055, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 
 ## Risks
 
@@ -112,4 +114,4 @@ Build the next P0 vertical-slice layer on top of merged route contracts: the `ag
 
 ## Next Step
 
-Continue the economy track with logistics/warehouse policies: reorder points, safety stock, route reservation priorities, and clearer warehouse pressure overlays.
+Prepare the stacked logistics/warehouse branch for review, or continue with explicit warehouse automation controls: reorder toggles, reserve sliders, and route-level reservation policies in the Godot prototype.
