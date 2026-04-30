@@ -19,6 +19,7 @@ var tests = new (string Name, Action Run)[]
     ("P0 content loads and validates", P0ContentLoadsAndValidates),
     ("content validation rejects unknown recipe resources", ContentValidationRejectsUnknownRecipeResources),
     ("simulation bridge uses loaded content", SimulationBridgeUsesLoadedContent),
+    ("prototype city specializations are deterministic", PrototypeCitySpecializationsAreDeterministic),
     ("prototype session ticks deterministically", PrototypeSessionTicksDeterministically),
     ("prototype session advances all systems", PrototypeSessionAdvancesAllSystems),
     ("prototype route contracts are deterministic", PrototypeRouteContractsAreDeterministic),
@@ -430,6 +431,46 @@ static void SimulationBridgeUsesLoadedContent()
     var snapshot = new SimulationBridge().CreateNewGame(424242);
     AssertEqual(content.ContentHash, snapshot.ContentHash);
     AssertEqual(content.Resources.Count, snapshot.InitialPrices.Count);
+}
+
+static void PrototypeCitySpecializationsAreDeterministic()
+{
+    var bridge = new SimulationBridge();
+    var first = bridge.CreatePrototypeSession(20260429);
+    var second = bridge.CreatePrototypeSession(20260429);
+    var initialFingerprint = CitySpecializationFingerprint(first.Current);
+
+    AssertEqual(initialFingerprint, CitySpecializationFingerprint(second.Current));
+    AssertTrue(first.Current.Cities.All(city => city.Districts.Contains("market", StringComparer.Ordinal)), "Every prototype city should expose its market district.");
+    AssertTrue(first.Current.Cities.All(city => !string.IsNullOrWhiteSpace(city.Specialization.RoleId)), "Every prototype city should expose a specialization role id.");
+    AssertTrue(first.Current.Cities.Select(city => city.Specialization.RoleId).Distinct(StringComparer.Ordinal).Count() >= 3, "Expected seed 20260429 to expose at least three city roles.");
+    AssertTrue(first.Current.Cities.All(city => IsReadOnlySnapshotList(city.Districts)), "City districts should be exposed as read-only snapshot lists.");
+    AssertTrue(
+        first.Current.Cities.All(city =>
+            IsReadOnlySnapshotList(city.Specialization.AnchorResources) &&
+            IsReadOnlySnapshotList(city.Specialization.OutputResources)),
+        "City specialization resources should be exposed as read-only snapshot lists.");
+
+    foreach (var city in first.Current.Cities)
+    {
+        var node = first.Current.World.Nodes.Single(node => node.Id == city.Id);
+        AssertTrue(
+            city.Specialization.AnchorResources.All(resource => node.Resources.Contains(resource, StringComparer.Ordinal)),
+            $"Expected {city.Id} specialization anchors to come from its world-node resources.");
+    }
+
+    for (var i = 0; i < 3; i++)
+    {
+        first.AdvanceTick();
+    }
+
+    AssertEqual(initialFingerprint, CitySpecializationFingerprint(first.Current));
+}
+
+static bool IsReadOnlySnapshotList(IReadOnlyList<string> values)
+{
+    return values is not string[] &&
+        (values is not ICollection<string> collection || collection.IsReadOnly);
 }
 
 static void PrototypeSessionTicksDeterministically()
@@ -894,6 +935,22 @@ static PrototypeRouteContractView FindContract(PrototypeSnapshot snapshot, strin
     var contract = snapshot.AvailableContracts.FirstOrDefault(predicate);
     AssertTrue(contract is not null, $"{failureMessage} Available: {ContractFingerprint(snapshot.AvailableContracts)}");
     return contract!;
+}
+
+static string CitySpecializationFingerprint(PrototypeSnapshot snapshot)
+{
+    return string.Join("|", snapshot.Cities
+        .OrderBy(city => city.Id, StringComparer.Ordinal)
+        .Select(city =>
+            string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}:{1}:{2}:{3}:{4}:{5}",
+                city.Id,
+                string.Join(",", city.Districts.Order(StringComparer.Ordinal)),
+                city.Specialization.RoleId,
+                city.Specialization.Label,
+                string.Join(",", city.Specialization.AnchorResources.Order(StringComparer.Ordinal)),
+                string.Join(",", city.Specialization.OutputResources.Order(StringComparer.Ordinal)))));
 }
 
 static string PolicyFingerprint(PrototypeSnapshot snapshot)

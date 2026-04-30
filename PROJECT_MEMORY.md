@@ -2,7 +2,7 @@
 
 ## Current Goal
 
-Build the next P0 vertical-slice layer as a player-facing gameplay-control harness: `agent/warehouse-controls-integration` continues from verified `agent/warehouse-control-loop` and reconciles warehouse policy, route policy, Godot UI, smoke, visual QA, and save v2 state into one branch.
+Build the next P0 vertical-slice layer on `agent/mvp-roadmap-execution`, starting from the verified warehouse/route policy harness and adding small deterministic MVP gameplay slices without breaking the Godot-free simulation boundary.
 
 ## Latest Decisions
 
@@ -35,6 +35,7 @@ Build the next P0 vertical-slice layer as a player-facing gameplay-control harne
 - Cross-agent branch status: `origin/agent/visual-ux-map-modes` commit `ac44fb6` has been merged into the route-contract work. The integrated Godot UI now uses typed `AvailableContracts`, `SelectedContractId`, and `SelectRouteContract` instead of the visual branch's temporary reflection/placeholder bridge path.
 - World generation version `0.2.0` uses deterministic coherent terrain fields with border water, readable landmass/coastlines, explicit settlement spacing, coastal ports placed on coast-adjacent land, and coastal route mode only between two ports.
 - `tools/test.ps1` runs the normal build, console tests, headless Godot interaction smoke, and non-headless `tools/visual-smoke.ps1` Full HD render verification by default; set `COT_SKIP_VISUAL_SMOKE=1` only for constrained automation.
+- MVP Stage 2 city specialization is bridge-only metadata for now: `PrototypeCityView` exposes existing districts plus deterministic role data derived from `WorldNode.Kind` and node resources. It does not change world generation, save format, economy rules, or Godot UI.
 
 ## System State
 
@@ -45,9 +46,9 @@ Build the next P0 vertical-slice layer as a player-facing gameplay-control harne
 - `AI.Company`: utility scorer for expansion/trade opportunities.
 - `Persistence.Core`: save game DTOs, JSON serialization, save validation, stable state hash, pending route contract id support, save version 2, persisted warehouse policy overrides, and persisted route policy controls.
 - `Content.Core`: JSON content loader, validation, and canonical content hash for P0 resources/recipes.
-- `GodotBridge`: dependency-free bridge facade plus `PrototypeSession`, which runs a deterministic P0 loop across content, world, economy, logistics, route contracts, city growth, AI, persistence hashing, per-city market pressure signals, controllable warehouse policy overrides, Balanced/Conservative warehouse automation modes, and route resource reservation/priority controls.
+- `GodotBridge`: dependency-free bridge facade plus `PrototypeSession`, which runs a deterministic P0 loop across content, world, economy, logistics, route contracts, city growth, AI, persistence hashing, per-city market pressure signals, deterministic city district/specialization view data, controllable warehouse policy overrides, Balanced/Conservative warehouse automation modes, and route resource reservation/priority controls.
 - `ChartersOfTrade.Godot`: Godot .NET project with a `Main.tscn` prototype shell driven by `BootstrapPanel.cs`; it renders coherent terrain, coastline highlights, terrain texture marks, settlement nodes, route lines/arrows, top map HUD, left map-mode rail, KPI metrics, city summary, ledger, tick controls, city/route selection, hover states, collision-aware map labels, route cash labels, animated route pulses, supply rings, route/city warning marks, city type stamps, Routes/Profit/Demand map modes, polished route contract controls, compact route policy controls, market pressure, warehouse policy focus/sort/edit controls, sectioned sidebar panels, and a contextual inspector. `InteractionSmoke.tscn` loads the real scene and exercises expected user actions headlessly; `VisualQa.tscn` captures multi-seed visual QA frames locally.
-- `Tests`: custom console test runner for determinism, terrain-sensitive world hashes, coherent world readability invariants, dense settlement configs, content validation, prototype ticks, route contracts, route policies, warehouse policy overrides and automation modes, declared consumption, save validation, save/load, economy, AI, and Godot interaction smoke; latest Windows run passed 36/36 plus `INTERACTION_SMOKE PASS` and `VISUAL_SMOKE PASS`.
+- `Tests`: custom console test runner for determinism, terrain-sensitive world hashes, coherent world readability invariants, dense settlement configs, content validation, prototype city specializations, prototype ticks, route contracts, route policies, warehouse policy overrides and automation modes, declared consumption, save validation, save/load, economy, AI, and Godot interaction smoke; latest Windows run passed 37/37 plus `INTERACTION_SMOKE PASS` and `VISUAL_SMOKE PASS`.
 - `Benchmarks`: console runner reporting seed-level playability metrics plus time-to-profit, bankruptcy frequency, post-run cash, AI move, and unmet demand.
 
 ## Changed Areas
@@ -98,6 +99,7 @@ Build the next P0 vertical-slice layer as a player-facing gameplay-control harne
 - Added `ADR-0006-warehouse-policy-save-state.md` to record the save v2 policy-state decision.
 - Warehouse controls integration started on `agent/warehouse-controls-integration`: added `RoutePolicySaveState`, `PrototypeRoutePolicyView`, `PrototypeSession.SetRouteResourceReservation`, `PrototypeSession.SetRoutePriorityResource`, deterministic route contract/logistics filtering, route priority boosts, save validation for complete route policies, Godot route policy controls in the Route Contract panel, warehouse policy focus/sort controls, workspace-local `.godot_user` handling for Godot CLI, and `tools/visual-qa.ps1` with `VisualQa.tscn`.
 - Warehouse automation coordination continued on `agent/warehouse-controls-integration`: the pushed `origin/agent/warehouse-automation-controls` branch was an older reorder/reserve model already superseded by the integration branch, while the reported Balanced/Conservative mode diff was not present locally or on GitHub. The missing mode behavior was implemented directly on the synced integration branch with `PrototypeSession.SetWarehousePolicyMode`, optional warehouse policy save `Mode`, Godot `WarehouseModeOptions`, smoke coverage, visual QA coverage, and a larger `tools/visual-qa.ps1` frame budget.
+- MVP Stage 2 city specialization started on `agent/mvp-roadmap-execution`: `PrototypeCityView` now exposes existing city districts and a bridge-only `PrototypeCitySpecialization` with role id, label, anchor resources, output resources, and rationale derived deterministically from world-node kind/resources; tests cover same-seed determinism and tick stability.
 
 ## Tests
 
@@ -116,6 +118,7 @@ Build the next P0 vertical-slice layer as a player-facing gameplay-control harne
 - Warehouse control loop verification after delegated review fixes: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 30/30 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-04293200000002.png`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 - Warehouse controls integration verification after delegated review fixes: `git diff --check` passed with only the expected CRLF warning for `tools/godot.ps1`; `powershell -ExecutionPolicy Bypass -File .\tools\build.ps1` passed with 0 warnings and 0 errors; `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 35/35 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-14290800000002.png`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25; `powershell -ExecutionPolicy Bypass -File .\tools\visual-qa.ps1` passed with 12 captures in `artifacts/godot-visual-qa/visual-qa-20260430-142930`.
 - Warehouse automation coordination verification after delegated review fixes: `powershell -ExecutionPolicy Bypass -File .\tools\build.ps1` passed with 0 warnings and 0 errors; `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 36/36 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-14505400000002.png`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25; `powershell -ExecutionPolicy Bypass -File .\tools\visual-qa.ps1` passed with 15 captures, including warehouse mode selector captures, in `artifacts/godot-visual-qa/visual-qa-20260430-145117`.
+- MVP Stage 2 city specialization verification after delegated review fix: `powershell -ExecutionPolicy Bypass -File .\tools\build.ps1` passed with 0 warnings and 0 errors; `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 37/37 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-15154800000002.png`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25.
 
 ## Risks
 
@@ -139,7 +142,8 @@ Build the next P0 vertical-slice layer as a player-facing gameplay-control harne
 - Godot CLI smoke may need to run outside sandboxed Codex sessions because Godot writes editor/runtime logs under `user://`.
 - Map-label placement is still a simple local collision pass; future larger maps may need a dedicated label layout/cache layer.
 - Stale Godot debug windows can continue showing older compiled UI after branch/build changes; when visual changes do not appear, close existing Godot processes and relaunch from the current checkout.
+- City specializations are currently descriptive bridge metadata only; Stage 3 should decide whether production-chain opportunities consume `OutputResources` or a richer authored role model before adding gameplay effects.
 
 ## Next Step
 
-Run one manual gameplay QA pass on warehouse Balanced/Conservative modes plus route blocking/priority across several seeds.
+Coordinate Stage 3 production-chain opportunities against the new bridge city specialization surface.

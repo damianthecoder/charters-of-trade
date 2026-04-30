@@ -15,10 +15,19 @@ public sealed record PrototypeCityView(
     int Y,
     CityLevel Level,
     int Population,
+    IReadOnlyList<string> Districts,
+    PrototypeCitySpecialization Specialization,
     double SupplySatisfaction,
     IReadOnlyDictionary<string, int> MarketStock,
     IReadOnlyDictionary<string, int> CompanyWarehouse,
     IReadOnlyList<PrototypeMarketSignal> MarketSignals);
+
+public sealed record PrototypeCitySpecialization(
+    string RoleId,
+    string Label,
+    IReadOnlyList<string> AnchorResources,
+    IReadOnlyList<string> OutputResources,
+    string Rationale);
 
 public sealed record PrototypeMarketSignal(
     string ResourceId,
@@ -293,6 +302,7 @@ public sealed class PrototypeSession
             CityLevel.Hamlet,
             population,
             ["market", index == 0 ? "charter_house" : "trading_post"],
+            SpecializationFor(node),
             market,
             warehouse,
             1.0);
@@ -509,6 +519,8 @@ public sealed class PrototypeSession
                 city.Y,
                 city.Level,
                 city.Population.Total,
+                ReadOnlyCopy(city.Districts),
+                CopySpecialization(city.Specialization),
                 city.SupplySatisfaction,
                 city.Market.ToDictionary(),
                 city.CompanyWarehouse.ToDictionary(),
@@ -1052,6 +1064,102 @@ public sealed class PrototypeSession
         return $"{prefix} {index + 1}";
     }
 
+    private static PrototypeCitySpecialization SpecializationFor(WorldNode node)
+    {
+        var resources = node.Resources.Order(StringComparer.Ordinal).ToArray();
+
+        if (string.Equals(node.Kind, "charter_town", StringComparison.Ordinal))
+        {
+            return new PrototypeCitySpecialization(
+                "charter_hub",
+                "Charter Hub",
+                resources.Take(2).ToArray(),
+                [],
+                "Coordinates company charters and market flows.");
+        }
+
+        if (string.Equals(node.Kind, "port", StringComparison.Ordinal) && resources.Contains("fish", StringComparer.Ordinal))
+        {
+            return new PrototypeCitySpecialization(
+                "fishery_port",
+                "Fishery Port",
+                ["fish"],
+                ["fish"],
+                "Turns coastal access into dependable food supply.");
+        }
+
+        if (resources.Contains("iron", StringComparer.Ordinal))
+        {
+            return new PrototypeCitySpecialization(
+                "ironworks",
+                "Ironworks",
+                ["iron"],
+                ["tools"],
+                "Anchors future toolmaking from local ore.");
+        }
+
+        if (resources.Contains("clay", StringComparer.Ordinal))
+        {
+            return new PrototypeCitySpecialization(
+                "kiln_town",
+                "Kiln Town",
+                ["clay"],
+                ["ceramics"],
+                "Supplies clay for civic craft production.");
+        }
+
+        if (resources.Contains("wool", StringComparer.Ordinal))
+        {
+            return new PrototypeCitySpecialization(
+                "textile_market",
+                "Textile Market",
+                ["wool"],
+                ["cloth"],
+                "Feeds cloth production from local pasture.");
+        }
+
+        if (resources.Contains("grain", StringComparer.Ordinal))
+        {
+            return new PrototypeCitySpecialization(
+                "grain_market",
+                "Grain Market",
+                ["grain"],
+                ["grain", "bread"],
+                "Supports staple supply and breadmaking.");
+        }
+
+        if (resources.Contains("wood", StringComparer.Ordinal))
+        {
+            return new PrototypeCitySpecialization(
+                "timber_depot",
+                "Timber Depot",
+                ["wood"],
+                ["wood"],
+                "Feeds construction, fuel, and craft inputs.");
+        }
+
+        return new PrototypeCitySpecialization(
+            "market_exchange",
+            "Market Exchange",
+            resources,
+            [],
+            "Balances regional trade around local stock.");
+    }
+
+    private static PrototypeCitySpecialization CopySpecialization(PrototypeCitySpecialization specialization)
+    {
+        return specialization with
+        {
+            AnchorResources = ReadOnlyCopy(specialization.AnchorResources),
+            OutputResources = ReadOnlyCopy(specialization.OutputResources)
+        };
+    }
+
+    private static IReadOnlyList<T> ReadOnlyCopy<T>(IEnumerable<T> values)
+    {
+        return Array.AsReadOnly(values.ToArray());
+    }
+
     private static string Signed(int value)
     {
         return value >= 0 ? $"+{value}" : value.ToString();
@@ -1130,6 +1238,7 @@ public sealed class PrototypeSession
         CityLevel level,
         PopulationCohorts population,
         IReadOnlyList<string> districts,
+        PrototypeCitySpecialization specialization,
         Inventory market,
         Inventory companyWarehouse,
         double supplySatisfaction)
@@ -1141,6 +1250,7 @@ public sealed class PrototypeSession
         public CityLevel Level { get; set; } = level;
         public PopulationCohorts Population { get; set; } = population;
         public IReadOnlyList<string> Districts { get; } = districts;
+        public PrototypeCitySpecialization Specialization { get; } = specialization;
         public Inventory Market { get; } = market;
         public Inventory CompanyWarehouse { get; } = companyWarehouse;
         public double SupplySatisfaction { get; set; } = supplySatisfaction;
