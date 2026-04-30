@@ -50,6 +50,9 @@ public partial class InteractionSmokeRunner : Control
         var runTwelveButton = FindButton(uiRoot, "Run 12");
         var resetSeedButton = FindButton(uiRoot, "Reset Seed");
         var selectContractButton = FindButton(uiRoot, "Select Contract");
+        var reorderButton = FindButtonByName(uiRoot, "WarehouseReorderButton");
+        var reserveSlider = FindRequired<HSlider>(uiRoot, slider => string.Equals(slider.Name.ToString(), "WarehouseReserveSlider", StringComparison.Ordinal));
+        var routePriorityButton = FindButtonByName(uiRoot, "RoutePriorityButton");
 
         AssertSmoke(AnyVisibleTextContains(uiRoot, "System Test Bench"), "System Test Bench was not visible.");
         AssertSmoke(!runTwelveButton.Disabled, "Run 12 was disabled.");
@@ -89,7 +92,7 @@ public partial class InteractionSmokeRunner : Control
         await ClickMapAsync(map, RouteHitPoint(map, reference, targetRoute));
         AssertRichTextContains(uiRoot, targetRoute.Id, "cashflow");
 
-        var contractOptions = FindRequired<OptionButton>(uiRoot);
+        var contractOptions = FindRequired<OptionButton>(uiRoot, options => string.Equals(options.Name.ToString(), "ContractOptions", StringComparison.Ordinal));
         AssertSmoke(!contractOptions.Disabled, "Contract dropdown stayed disabled after selecting a route with contracts.");
         AssertSmoke(contractOptions.ItemCount > 0, "Contract dropdown did not contain any choices.");
 
@@ -101,6 +104,22 @@ public partial class InteractionSmokeRunner : Control
 
         await PressButtonAsync(selectContractButton);
         AssertSmoke(AnyVisibleTextContains(uiRoot, "Selected contract:"), "Selected contract summary did not appear.");
+
+        var policyHash = GetMetricValue(uiRoot, "Save Hash");
+        await PressButtonAsync(reorderButton);
+        AssertSmoke(GetMetricValue(uiRoot, "Save Hash") != policyHash, "Warehouse reorder toggle did not change the save hash.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "manual"), "Warehouse policy summary did not report manual mode after disabling reorder.");
+
+        policyHash = GetMetricValue(uiRoot, "Save Hash");
+        reserveSlider.Value = Math.Min(reserveSlider.MaxValue, reserveSlider.Value + 1);
+        await WaitFrames(3);
+        AssertSmoke(GetMetricValue(uiRoot, "Save Hash") != policyHash, "Warehouse reserve slider did not change the save hash.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "reserve"), "Warehouse policy summary did not report reserve stock.");
+
+        policyHash = GetMetricValue(uiRoot, "Save Hash");
+        await PressButtonAsync(routePriorityButton);
+        AssertSmoke(GetMetricValue(uiRoot, "Save Hash") != policyHash, "Route priority control did not change the save hash.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "priority"), "Route policy summary did not report priority after route control.");
 
         await PressButtonAsync(advanceButton);
         AssertSmoke(GetMetricValue(uiRoot, "Tick") == "1", "Advance Tick did not advance the tick metric to 1.");
@@ -273,6 +292,11 @@ public partial class InteractionSmokeRunner : Control
     private static Button FindButton(Node root, string text)
     {
         return FindRequired<Button>(root, button => string.Equals(button.Text, text, StringComparison.Ordinal));
+    }
+
+    private static Button FindButtonByName(Node root, string name)
+    {
+        return FindRequired<Button>(root, button => string.Equals(button.Name.ToString(), name, StringComparison.Ordinal));
     }
 
     private static T FindRequired<T>(Node root, Func<T, bool>? predicate = null)

@@ -28,6 +28,17 @@ public sealed record RouteSaveState(
     int CapacityPerDay,
     IReadOnlyList<string> ReservedFor);
 
+public sealed record WarehousePolicySaveState(
+    string CityId,
+    string ResourceId,
+    bool ReorderEnabled,
+    int ReserveStock);
+
+public sealed record RoutePolicySaveState(
+    string RouteId,
+    IReadOnlyList<string> ReservedResources,
+    string? PriorityResourceId);
+
 public sealed record EventSaveState(string Id, string State, int DaysRemaining);
 
 public sealed record FogOfWarState(IReadOnlyList<string> DiscoveredNodes);
@@ -44,11 +55,13 @@ public sealed record SaveGame(
     IReadOnlyList<RouteSaveState> Routes,
     IReadOnlyList<EventSaveState> Events,
     FogOfWarState FogOfWar,
+    IReadOnlyList<WarehousePolicySaveState>? WarehousePolicies,
+    IReadOnlyList<RoutePolicySaveState>? RoutePolicies,
     string? PendingRouteContractId);
 
 public static class SaveCodec
 {
-    public const int CurrentSaveVersion = 1;
+    public const int CurrentSaveVersion = 2;
 
     private static readonly JsonSerializerOptions Options = new()
     {
@@ -86,6 +99,17 @@ public static class SaveCodec
             Cities = save.Cities.OrderBy(city => city.Id, StringComparer.Ordinal).ToArray(),
             Routes = save.Routes.OrderBy(route => route.Id, StringComparer.Ordinal).ToArray(),
             Events = save.Events.OrderBy(evt => evt.Id, StringComparer.Ordinal).ToArray(),
+            WarehousePolicies = (save.WarehousePolicies ?? [])
+                .OrderBy(policy => policy.CityId, StringComparer.Ordinal)
+                .ThenBy(policy => policy.ResourceId, StringComparer.Ordinal)
+                .ToArray(),
+            RoutePolicies = (save.RoutePolicies ?? [])
+                .Select(policy => policy with
+                {
+                    ReservedResources = (policy.ReservedResources ?? []).Order(StringComparer.Ordinal).ToArray()
+                })
+                .OrderBy(policy => policy.RouteId, StringComparer.Ordinal)
+                .ToArray(),
             FogOfWar = save.FogOfWar with
             {
                 DiscoveredNodes = save.FogOfWar.DiscoveredNodes.Order(StringComparer.Ordinal).ToArray()
@@ -149,6 +173,9 @@ public static class SaveValidator
             }
         }
 
+        ValidateWarehousePolicies(save.WarehousePolicies ?? [], errors);
+        ValidateRoutePolicies(save.RoutePolicies ?? [], errors);
+
         if (save.PendingRouteContractId is not null && string.IsNullOrWhiteSpace(save.PendingRouteContractId))
         {
             errors.Add("pendingRouteContractId must not be empty when present");
@@ -191,6 +218,80 @@ public static class SaveValidator
             if (amount < 0)
             {
                 errors.Add($"city '{cityId}' {stockName} resource '{resourceId}' must not be negative");
+            }
+        }
+    }
+
+    private static void ValidateWarehousePolicies(IReadOnlyList<WarehousePolicySaveState> policies, List<string> errors)
+    {
+        var keys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var policy in policies)
+        {
+            if (string.IsNullOrWhiteSpace(policy.CityId))
+            {
+                errors.Add("warehouse policy cityId must not be empty");
+            }
+
+            if (string.IsNullOrWhiteSpace(policy.ResourceId))
+            {
+                errors.Add("warehouse policy resourceId must not be empty");
+            }
+
+            if (!keys.Add($"{policy.CityId}\u001f{policy.ResourceId}"))
+            {
+                errors.Add($"duplicate warehouse policy for city '{policy.CityId}' and resource '{policy.ResourceId}'");
+            }
+
+            if (policy.ReserveStock < 0)
+            {
+                errors.Add($"warehouse policy for city '{policy.CityId}' resource '{policy.ResourceId}' reserveStock must not be negative");
+            }
+        }
+    }
+
+    private static void ValidateRoutePolicies(IReadOnlyList<RoutePolicySaveState> policies, List<string> errors)
+    {
+        var routeIds = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var policy in policies)
+        {
+            if (string.IsNullOrWhiteSpace(policy.RouteId))
+            {
+                errors.Add("route policy routeId must not be empty");
+            }
+
+            if (!routeIds.Add(policy.RouteId))
+            {
+                errors.Add($"duplicate route policy for route '{policy.RouteId}'");
+            }
+
+            if (policy.ReservedResources is null)
+            {
+                errors.Add($"route policy '{policy.RouteId}' reservedResources must not be null");
+                continue;
+            }
+
+            var resources = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var resourceId in policy.ReservedResources)
+            {
+                if (string.IsNullOrWhiteSpace(resourceId))
+                {
+                    errors.Add($"route policy '{policy.RouteId}' reserved resource id must not be empty");
+                }
+
+                if (!resources.Add(resourceId))
+                {
+                    errors.Add($"route policy '{policy.RouteId}' has duplicate reserved resource '{resourceId}'");
+                }
+            }
+
+            if (policy.PriorityResourceId is not null && string.IsNullOrWhiteSpace(policy.PriorityResourceId))
+            {
+                errors.Add($"route policy '{policy.RouteId}' priorityResourceId must not be empty when present");
+            }
+
+            if (policy.PriorityResourceId is not null && !resources.Contains(policy.PriorityResourceId))
+            {
+                errors.Add($"route policy '{policy.RouteId}' priorityResourceId must be one of reservedResources");
             }
         }
     }

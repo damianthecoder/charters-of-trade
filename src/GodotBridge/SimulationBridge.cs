@@ -179,6 +179,8 @@ public static class StarterSaveFactory
             routes.Select(route => new RouteSaveState(route.Id, route.FromNode, route.ToNode, route.Mode, route.CapacityPerDay, reserved)).ToArray(),
             [],
             new FogOfWarState(nodes.Take(3).Select(node => node.Id).ToArray()),
+            [],
+            [],
             null);
     }
 }

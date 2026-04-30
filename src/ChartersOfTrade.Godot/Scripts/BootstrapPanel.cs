@@ -1,4 +1,5 @@
 using System.Globalization;
+using ChartersOfTrade.Economy.Core;
 using ChartersOfTrade.GodotBridge;
 using ChartersOfTrade.Logistics.Core;
 using ChartersOfTrade.WorldGen.Core;
@@ -30,7 +31,17 @@ public partial class BootstrapPanel : Control
     private Label? _contractSummary;
     private OptionButton? _contractOptions;
     private Button? _contractActionButton;
+    private Label? _warehousePolicySummary;
+    private OptionButton? _warehousePolicyOptions;
+    private Button? _warehouseReorderButton;
+    private HSlider? _warehouseReserveSlider;
+    private Label? _routePolicySummary;
+    private OptionButton? _routePolicyOptions;
+    private Button? _routeReserveButton;
+    private Button? _routePriorityButton;
     private IReadOnlyList<PrototypeRouteContractView> _visibleContracts = [];
+    private IReadOnlyList<PrototypeWarehousePolicyView> _visibleWarehousePolicies = [];
+    private IReadOnlyList<ResourceDef> _visibleRoutePolicyResources = [];
     private PrototypeMapMode _mapMode = PrototypeMapMode.Routes;
     private string? _pendingContractId;
     private string? _contractScopeKey;
@@ -38,6 +49,7 @@ public partial class BootstrapPanel : Control
     private string? _selectedCityId;
     private string? _selectedRouteId;
     private bool _refreshingContractControl;
+    private bool _refreshingPolicyControl;
 
     private sealed record LayoutProfile(
         int OuterMargin,
@@ -214,6 +226,7 @@ public partial class BootstrapPanel : Control
 
         _contractOptions = new OptionButton
         {
+            Name = "ContractOptions",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             CustomMinimumSize = new Vector2(0, 30)
         };
@@ -233,9 +246,70 @@ public partial class BootstrapPanel : Control
         _warnings.CustomMinimumSize = new Vector2(0, layout.WarningHeight);
         sidebar.AddChild(CreateSectionPanel("Market Pressure", _warnings));
 
+        var policyStack = CreateSectionStack();
+        policyStack.AddChild(CreateSectionHint("Warehouse controls are saved gameplay policy: reorder automation, local reserve stock, and route goods priorities."));
+
+        _warehousePolicySummary = CreateInlineLabel("");
+        policyStack.AddChild(_warehousePolicySummary);
+
+        _warehousePolicyOptions = new OptionButton
+        {
+            Name = "WarehousePolicyOptions",
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 30)
+        };
+        _warehousePolicyOptions.ItemSelected += OnWarehousePolicyOptionSelected;
+        policyStack.AddChild(_warehousePolicyOptions);
+
+        var reserveRow = new HBoxContainer();
+        reserveRow.AddThemeConstantOverride("separation", 8);
+        reserveRow.AddChild(CreateMetricLabel("Reserve", new Color(0.62f, 0.69f, 0.69f, 1.0f), HorizontalAlignment.Left));
+        _warehouseReserveSlider = new HSlider
+        {
+            Name = "WarehouseReserveSlider",
+            MinValue = 0,
+            MaxValue = 24,
+            Step = 1,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 26)
+        };
+        _warehouseReserveSlider.ValueChanged += OnWarehouseReserveChanged;
+        reserveRow.AddChild(_warehouseReserveSlider);
+        policyStack.AddChild(reserveRow);
+
+        _warehouseReorderButton = CreateButton("Disable Reorder");
+        _warehouseReorderButton.Name = "WarehouseReorderButton";
+        _warehouseReorderButton.Pressed += ToggleWarehouseReorder;
+        policyStack.AddChild(_warehouseReorderButton);
+
+        _routePolicySummary = CreateInlineLabel("");
+        policyStack.AddChild(_routePolicySummary);
+
+        _routePolicyOptions = new OptionButton
+        {
+            Name = "RoutePolicyOptions",
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 30)
+        };
+        _routePolicyOptions.ItemSelected += OnRoutePolicyOptionSelected;
+        policyStack.AddChild(_routePolicyOptions);
+
+        var routePolicyActions = new HBoxContainer();
+        routePolicyActions.AddThemeConstantOverride("separation", 8);
+        _routeReserveButton = CreateButton("Unreserve Good");
+        _routeReserveButton.Name = "RouteReserveButton";
+        _routeReserveButton.Pressed += ToggleRouteReservation;
+        routePolicyActions.AddChild(_routeReserveButton);
+        _routePriorityButton = CreateButton("Prioritize Good");
+        _routePriorityButton.Name = "RoutePriorityButton";
+        _routePriorityButton.Pressed += PrioritizeRouteResource;
+        routePolicyActions.AddChild(_routePriorityButton);
+        policyStack.AddChild(routePolicyActions);
+
         _policy = CreateLog();
         _policy.CustomMinimumSize = new Vector2(0, layout.PolicyHeight);
-        sidebar.AddChild(CreateSectionPanel("Warehouse Policy", _policy));
+        policyStack.AddChild(_policy);
+        sidebar.AddChild(CreateSectionPanel("Warehouse Policy", policyStack));
 
         _cities = CreateLog();
         _cities.CustomMinimumSize = new Vector2(0, layout.CitiesHeight);
@@ -388,11 +462,22 @@ public partial class BootstrapPanel : Control
         _contractSummary = null;
         _contractOptions = null;
         _contractActionButton = null;
+        _warehousePolicySummary = null;
+        _warehousePolicyOptions = null;
+        _warehouseReorderButton = null;
+        _warehouseReserveSlider = null;
+        _routePolicySummary = null;
+        _routePolicyOptions = null;
+        _routeReserveButton = null;
+        _routePriorityButton = null;
         _visibleContracts = [];
+        _visibleWarehousePolicies = [];
+        _visibleRoutePolicyResources = [];
         _pendingContractId = null;
         _contractScopeKey = null;
         _invalidContractId = null;
         _refreshingContractControl = false;
+        _refreshingPolicyControl = false;
     }
 
     private void SelectCity(string cityId)
@@ -520,7 +605,7 @@ public partial class BootstrapPanel : Control
             .OrderByDescending(signal => signal.ShipmentPriority)
             .ThenByDescending(signal => signal.Scarcity)
             .Take(3)
-            .Select(signal => $"{ResourceLabel(signal.ResourceId)} {signal.MarketStock}/{signal.DesiredStock}, safety {signal.SafetyStock}, reorder {signal.ReorderPoint}, {signal.PolicyAction}")
+            .Select(signal => $"{ResourceLabel(signal.ResourceId)} {signal.MarketStock}/{signal.DesiredStock}, reserve {signal.ReserveStock}, {(signal.ReorderEnabled ? "auto" : "manual")}, {signal.PolicyAction}")
             .ToArray();
         var routeLines = connectedRoutes
             .Take(4)
@@ -584,6 +669,12 @@ public partial class BootstrapPanel : Control
         _inspector.AppendText($"Capacity {route.CapacityPerDay}/day | lead time {route.LeadDays} {DayLabel(route.LeadDays)} | cost {route.CostPerUnit:0.00}/unit\n");
         _inspector.AppendText($"Company Ledger cashflow on this route: {FormatSignedMoney(lastCash)}\n");
         _inspector.AppendText($"Market Pressure at endpoints: {routeDemand}\n");
+        var routePolicy = RoutePolicyFor(route.Id);
+        if (routePolicy is not null)
+        {
+            _inspector.AppendText($"Route reservation: {routePolicy.ReservedResources.Count} goods reserved; priority {ResourceLabel(routePolicy.PriorityResourceId)}\n");
+        }
+
         if (selectedRouteContract is not null)
         {
             _inspector.AppendText($"Route Contract selected: {ContractBrief(selectedRouteContract)}\n");
@@ -677,19 +768,26 @@ public partial class BootstrapPanel : Control
         }
 
         _policy.Clear();
+        _refreshingPolicyControl = true;
 
-        var focusCity = _selectedCityId is not null
-            ? _snapshot.Cities.FirstOrDefault(city => city.Id == _selectedCityId)
-            : _snapshot.Cities
-                .OrderByDescending(city => TopPressureSignal(city)?.ShipmentPriority ?? 0)
-                .ThenBy(city => city.SupplySatisfaction)
-                .FirstOrDefault();
+        var focusCity = FocusPolicyCity();
 
         if (focusCity is null)
         {
+            ClearPolicyControls("Warehouse policy has no city state to inspect.");
             _policy.AppendText("Warehouse policy has no city state to inspect.\n");
+            _refreshingPolicyControl = false;
             return;
         }
+
+        var previousWarehouseResource = SelectedWarehousePolicy()?.ResourceId;
+        _visibleWarehousePolicies = _snapshot.WarehousePolicies
+            .Where(policy => policy.CityId == focusCity.Id)
+            .OrderByDescending(policy => policy.ShipmentPriority)
+            .ThenBy(policy => policy.ResourceId, StringComparer.Ordinal)
+            .ToArray();
+        RefreshWarehousePolicyControls(focusCity, previousWarehouseResource);
+        RefreshRoutePolicyControls();
 
         var signals = focusCity.MarketSignals
             .Where(signal => signal.DesiredStock > 0)
@@ -702,14 +800,354 @@ public partial class BootstrapPanel : Control
         if (signals.Length == 0)
         {
             _policy.AppendText("No tracked reorder needs in this city.\n");
+            _refreshingPolicyControl = false;
             return;
         }
 
         foreach (var signal in signals)
         {
-            _policy.AppendText($"{ResourceLabel(signal.ResourceId)}: market {signal.MarketStock}/{signal.DesiredStock}, warehouse {signal.WarehouseStock}, safety {signal.SafetyStock}, reorder {signal.ReorderPoint}, P{signal.ShipmentPriority}\n");
+            var reorder = signal.ReorderEnabled ? "auto" : "manual";
+            _policy.AppendText($"{ResourceLabel(signal.ResourceId)}: market {signal.MarketStock}/{signal.DesiredStock}, warehouse {signal.WarehouseStock}, reserve {signal.ReserveStock}, reorder {signal.ReorderPoint} {reorder}, P{signal.ShipmentPriority}\n");
             _policy.AppendText($"Action: {signal.PolicyAction}\n");
         }
+
+        _refreshingPolicyControl = false;
+    }
+
+    private PrototypeCityView? FocusPolicyCity()
+    {
+        if (_snapshot is null)
+        {
+            return null;
+        }
+
+        if (_selectedCityId is not null)
+        {
+            var selected = _snapshot.Cities.FirstOrDefault(city => city.Id == _selectedCityId);
+            if (selected is not null)
+            {
+                return selected;
+            }
+        }
+
+        return _snapshot.Cities
+            .OrderByDescending(city => TopPressureSignal(city)?.ShipmentPriority ?? 0)
+            .ThenBy(city => city.SupplySatisfaction)
+            .FirstOrDefault();
+    }
+
+    private TradeRoute? FocusPolicyRoute()
+    {
+        if (_snapshot is null)
+        {
+            return null;
+        }
+
+        if (_selectedRouteId is not null)
+        {
+            var selectedRoute = _snapshot.Routes.FirstOrDefault(route => route.Id == _selectedRouteId);
+            if (selectedRoute is not null)
+            {
+                return selectedRoute;
+            }
+        }
+
+        if (_selectedCityId is not null)
+        {
+            var cityRoute = _snapshot.Routes
+                .Where(route => route.FromNode == _selectedCityId || route.ToNode == _selectedCityId)
+                .OrderBy(route => route.Id, StringComparer.Ordinal)
+                .FirstOrDefault();
+            if (cityRoute is not null)
+            {
+                return cityRoute;
+            }
+        }
+
+        var selectedContract = SelectedContract();
+        if (selectedContract is not null)
+        {
+            var contractRoute = _snapshot.Routes.FirstOrDefault(route => route.Id == selectedContract.RouteId);
+            if (contractRoute is not null)
+            {
+                return contractRoute;
+            }
+        }
+
+        return _snapshot.AvailableContracts.Count > 0
+            ? _snapshot.Routes.FirstOrDefault(route => route.Id == _snapshot.AvailableContracts[0].RouteId)
+            : _snapshot.Routes.OrderBy(route => route.Id, StringComparer.Ordinal).FirstOrDefault();
+    }
+
+    private void RefreshWarehousePolicyControls(PrototypeCityView focusCity, string? previousResourceId)
+    {
+        if (_warehousePolicySummary is null || _warehousePolicyOptions is null || _warehouseReorderButton is null || _warehouseReserveSlider is null)
+        {
+            return;
+        }
+
+        _warehousePolicyOptions.Clear();
+        if (_visibleWarehousePolicies.Count == 0)
+        {
+            _warehousePolicyOptions.AddItem("No warehouse policies");
+            _warehousePolicyOptions.Disabled = true;
+            _warehouseReorderButton.Disabled = true;
+            _warehouseReserveSlider.Editable = false;
+            _warehousePolicySummary.Text = $"Warehouse: {focusCity.Name} has no tracked policy goods.";
+            return;
+        }
+
+        _warehousePolicyOptions.Disabled = false;
+        var selectedIndex = 0;
+        for (var i = 0; i < _visibleWarehousePolicies.Count; i++)
+        {
+            var policy = _visibleWarehousePolicies[i];
+            _warehousePolicyOptions.AddItem(WarehousePolicyOptionLabel(policy), i);
+            if (string.Equals(policy.ResourceId, previousResourceId, StringComparison.Ordinal))
+            {
+                selectedIndex = i;
+            }
+        }
+
+        _warehousePolicyOptions.Select(selectedIndex);
+        var selected = _visibleWarehousePolicies[selectedIndex];
+        _warehouseReorderButton.Disabled = false;
+        _warehouseReorderButton.Text = selected.ReorderEnabled ? "Disable Reorder" : "Enable Reorder";
+        _warehouseReserveSlider.Editable = true;
+        _warehouseReserveSlider.Value = selected.ReserveStock;
+        _warehousePolicySummary.Text = $"Warehouse: {focusCity.Name} {ResourceLabel(selected.ResourceId)} reorder {(selected.ReorderEnabled ? "on" : "off")}, reserve {selected.ReserveStock}, P{selected.ShipmentPriority}.";
+    }
+
+    private void RefreshRoutePolicyControls()
+    {
+        if (_snapshot is null || _routePolicySummary is null || _routePolicyOptions is null || _routeReserveButton is null || _routePriorityButton is null)
+        {
+            return;
+        }
+
+        var previousResourceId = SelectedRoutePolicyResource()?.Id;
+        _routePolicyOptions.Clear();
+        var route = FocusPolicyRoute();
+        var policy = route is null ? null : RoutePolicyFor(route.Id);
+        if (route is null || policy is null)
+        {
+            _visibleRoutePolicyResources = [];
+            _routePolicyOptions.AddItem("No route policy");
+            _routePolicyOptions.Disabled = true;
+            _routeReserveButton.Disabled = true;
+            _routePriorityButton.Disabled = true;
+            _routePolicySummary.Text = "Route: no route selected for reservation policy.";
+            return;
+        }
+
+        _visibleRoutePolicyResources = _snapshot.Resources.OrderBy(resource => resource.Id, StringComparer.Ordinal).ToArray();
+        _routePolicyOptions.Disabled = false;
+
+        var selectedIndex = 0;
+        for (var i = 0; i < _visibleRoutePolicyResources.Count; i++)
+        {
+            var resource = _visibleRoutePolicyResources[i];
+            _routePolicyOptions.AddItem(RoutePolicyOptionLabel(policy, resource), i);
+            if (string.Equals(resource.Id, previousResourceId, StringComparison.Ordinal)
+                || (previousResourceId is null && string.Equals(resource.Id, policy.PriorityResourceId, StringComparison.Ordinal)))
+            {
+                selectedIndex = i;
+            }
+        }
+
+        _routePolicyOptions.Select(selectedIndex);
+        var selectedResource = _visibleRoutePolicyResources[selectedIndex];
+        var selectedReserved = policy.ReservedResources.Contains(selectedResource.Id, StringComparer.Ordinal);
+        _routeReserveButton.Disabled = false;
+        _routeReserveButton.Text = selectedReserved ? "Unreserve Good" : "Reserve Good";
+        _routePriorityButton.Disabled = false;
+        _routePolicySummary.Text = $"Route: {route.Id} reserves {policy.ReservedResources.Count} goods; priority {ResourceLabel(policy.PriorityResourceId)}.";
+    }
+
+    private void ClearPolicyControls(string message)
+    {
+        if (_warehousePolicySummary is not null)
+        {
+            _warehousePolicySummary.Text = message;
+        }
+        if (_warehousePolicyOptions is not null)
+        {
+            _warehousePolicyOptions.Clear();
+            _warehousePolicyOptions.AddItem("No warehouse policy");
+            _warehousePolicyOptions.Disabled = true;
+        }
+
+        if (_warehouseReorderButton is not null)
+        {
+            _warehouseReorderButton.Disabled = true;
+        }
+
+        if (_warehouseReserveSlider is not null)
+        {
+            _warehouseReserveSlider.Editable = false;
+        }
+
+        if (_routePolicySummary is not null)
+        {
+            _routePolicySummary.Text = "Route: no route policy.";
+        }
+        if (_routePolicyOptions is not null)
+        {
+            _routePolicyOptions.Clear();
+            _routePolicyOptions.AddItem("No route policy");
+            _routePolicyOptions.Disabled = true;
+        }
+
+        if (_routeReserveButton is not null)
+        {
+            _routeReserveButton.Disabled = true;
+        }
+
+        if (_routePriorityButton is not null)
+        {
+            _routePriorityButton.Disabled = true;
+        }
+    }
+
+    private void OnWarehousePolicyOptionSelected(long _)
+    {
+        if (_refreshingPolicyControl)
+        {
+            return;
+        }
+
+        UpdatePolicyPanel();
+    }
+
+    private void OnWarehouseReserveChanged(double value)
+    {
+        if (_refreshingPolicyControl || _session is null)
+        {
+            return;
+        }
+
+        var policy = SelectedWarehousePolicy();
+        if (policy is null)
+        {
+            return;
+        }
+
+        if (_session.SetWarehouseReserve(policy.CityId, policy.ResourceId, (int)Math.Round(value)))
+        {
+            _snapshot = _session.Current;
+            UpdatePrototypeView();
+        }
+    }
+
+    private void ToggleWarehouseReorder()
+    {
+        if (_session is null)
+        {
+            return;
+        }
+
+        var policy = SelectedWarehousePolicy();
+        if (policy is null)
+        {
+            return;
+        }
+
+        if (_session.SetWarehouseReorder(policy.CityId, policy.ResourceId, !policy.ReorderEnabled))
+        {
+            _snapshot = _session.Current;
+            UpdatePrototypeView();
+        }
+    }
+
+    private void OnRoutePolicyOptionSelected(long _)
+    {
+        if (_refreshingPolicyControl)
+        {
+            return;
+        }
+
+        UpdatePolicyPanel();
+    }
+
+    private void ToggleRouteReservation()
+    {
+        if (_session is null)
+        {
+            return;
+        }
+
+        var route = FocusPolicyRoute();
+        var policy = route is null ? null : RoutePolicyFor(route.Id);
+        var resource = SelectedRoutePolicyResource();
+        if (route is null || policy is null || resource is null)
+        {
+            return;
+        }
+
+        var reserved = policy.ReservedResources.Contains(resource.Id, StringComparer.Ordinal);
+        if (_session.SetRouteResourceReservation(route.Id, resource.Id, !reserved))
+        {
+            _snapshot = _session.Current;
+            UpdatePrototypeView();
+        }
+    }
+
+    private void PrioritizeRouteResource()
+    {
+        if (_session is null)
+        {
+            return;
+        }
+
+        var route = FocusPolicyRoute();
+        var resource = SelectedRoutePolicyResource();
+        if (route is null || resource is null)
+        {
+            return;
+        }
+
+        if (_session.SetRoutePriorityResource(route.Id, resource.Id))
+        {
+            _snapshot = _session.Current;
+            UpdatePrototypeView();
+        }
+    }
+
+    private PrototypeWarehousePolicyView? SelectedWarehousePolicy()
+    {
+        if (_warehousePolicyOptions is null || _visibleWarehousePolicies.Count == 0 || _warehousePolicyOptions.Selected < 0)
+        {
+            return null;
+        }
+
+        return _visibleWarehousePolicies[Math.Clamp(_warehousePolicyOptions.Selected, 0, _visibleWarehousePolicies.Count - 1)];
+    }
+
+    private ResourceDef? SelectedRoutePolicyResource()
+    {
+        if (_routePolicyOptions is null || _visibleRoutePolicyResources.Count == 0 || _routePolicyOptions.Selected < 0)
+        {
+            return null;
+        }
+
+        return _visibleRoutePolicyResources[Math.Clamp(_routePolicyOptions.Selected, 0, _visibleRoutePolicyResources.Count - 1)];
+    }
+
+    private PrototypeRoutePolicyView? RoutePolicyFor(string routeId)
+    {
+        return _snapshot?.RoutePolicies.FirstOrDefault(policy => policy.RouteId == routeId);
+    }
+
+    private string WarehousePolicyOptionLabel(PrototypeWarehousePolicyView policy)
+    {
+        return $"{ResourceLabel(policy.ResourceId)} | {(policy.ReorderEnabled ? "auto" : "manual")} | reserve {policy.ReserveStock} | P{policy.ShipmentPriority}";
+    }
+
+    private string RoutePolicyOptionLabel(PrototypeRoutePolicyView policy, ResourceDef resource)
+    {
+        var reserved = policy.ReservedResources.Contains(resource.Id, StringComparer.Ordinal) ? "reserved" : "open";
+        var priority = string.Equals(policy.PriorityResourceId, resource.Id, StringComparison.Ordinal) ? " | priority" : "";
+        return $"{ResourceLabel(resource.Id)} | {reserved}{priority}";
     }
 
     private void UpdateTestProbe()
@@ -737,6 +1175,12 @@ public partial class BootstrapPanel : Control
         _testProbe.AppendText(topCity?.Signal is null
             ? "Market Pressure: none\n"
             : $"Market Pressure: {topCity.City.Name} {ResourceLabel(topCity.Signal.ResourceId)} {topCity.Signal.MarketStock}/{topCity.Signal.ReorderPoint}, P{topCity.Signal.ShipmentPriority}, {topCity.Signal.PolicyAction}\n");
+        var topPolicy = topCity?.Signal is null || topCity.City is null
+            ? null
+            : _snapshot.WarehousePolicies.FirstOrDefault(policy => policy.CityId == topCity.City.Id && policy.ResourceId == topCity.Signal.ResourceId);
+        _testProbe.AppendText(topPolicy is null
+            ? "Warehouse Policy: none\n"
+            : $"Warehouse Policy: {(topPolicy.ReorderEnabled ? "auto" : "manual")} {ResourceLabel(topPolicy.ResourceId)}, reserve {topPolicy.ReserveStock}, P{topPolicy.ShipmentPriority}\n");
         _testProbe.AppendText(bestContract is null
             ? "Route Contract: none\n"
             : $"Route Contract: P{bestContract.ShipmentPriority} {ResourceLabel(bestContract.ResourceId)} x{bestContract.Units}, net {FormatSignedMoney(bestContract.ExpectedNet)}\n");
@@ -1335,8 +1779,13 @@ public partial class BootstrapPanel : Control
             : $"{route.Id} ({CityName(route.FromNode)} -> {CityName(route.ToNode)})";
     }
 
-    private static string ResourceLabel(string resourceId)
+    private static string ResourceLabel(string? resourceId)
     {
+        if (string.IsNullOrWhiteSpace(resourceId))
+        {
+            return "none";
+        }
+
         var words = resourceId.Split(new[] { '_', '-' }, StringSplitOptions.RemoveEmptyEntries);
         return words.Length == 0
             ? resourceId
