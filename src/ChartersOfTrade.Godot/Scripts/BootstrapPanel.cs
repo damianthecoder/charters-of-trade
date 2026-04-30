@@ -121,21 +121,19 @@ public partial class BootstrapPanel : Control
             SizeFlagsVertical = SizeFlags.ExpandFill,
             CustomMinimumSize = new Vector2(layout.SidebarWidth, 0)
         };
-        sidebar.AddThemeConstantOverride("separation", 10);
+        sidebar.AddThemeConstantOverride("separation", 12);
         sidebarScroll.AddChild(sidebar);
         root.AddChild(WrapPanel(sidebarScroll, horizontalExpand: false, minimumWidth: layout.SidebarWidth + 34));
 
         sidebar.AddChild(CreateTitle("Charters of Trade"));
-        sidebar.AddChild(CreateMutedLabel("Systems test bench for trade flows, market pressure, contracts, and deterministic seeds."));
+        sidebar.AddChild(CreateMutedLabel("Prototype systems loop"));
         sidebar.AddChild(CreateDivider());
 
-        sidebar.AddChild(CreateSectionLabel("Company Ledger"));
         var metricGrid = new GridContainer
         {
             Columns = 2,
             SizeFlagsHorizontal = SizeFlags.ExpandFill
         };
-        sidebar.AddChild(metricGrid);
 
         AddMetric(metricGrid, "Tick");
         AddMetric(metricGrid, "Day");
@@ -144,12 +142,13 @@ public partial class BootstrapPanel : Control
         AddMetric(metricGrid, "Save Hash");
         AddMetric(metricGrid, "AI Move");
         AddMetric(metricGrid, "Unmet Demand");
+        sidebar.AddChild(CreateSectionPanel("Company Ledger", metricGrid));
 
-        sidebar.AddChild(CreateSectionLabel("System Test Bench"));
-        sidebar.AddChild(CreateSectionHint("Seed resets the same world, economy, routes, and save hash. Tick buttons advance the daily simulation so changes can be traced."));
+        var testStack = CreateSectionStack();
+        testStack.AddChild(CreateSectionHint("Seed resets the same world, economy, routes, and save hash. Tick buttons advance the daily simulation so changes can be traced."));
         var seedRow = new HBoxContainer();
         seedRow.AddThemeConstantOverride("separation", 8);
-        sidebar.AddChild(seedRow);
+        testStack.AddChild(seedRow);
         seedRow.AddChild(CreateMetricLabel("Seed", new Color(0.62f, 0.69f, 0.69f, 1.0f), HorizontalAlignment.Left));
         _seedInput = new SpinBox
         {
@@ -165,7 +164,7 @@ public partial class BootstrapPanel : Control
 
         var actions = new HBoxContainer();
         actions.AddThemeConstantOverride("separation", 8);
-        sidebar.AddChild(actions);
+        testStack.AddChild(actions);
 
         var tickButton = CreateButton("Advance Tick");
         tickButton.Pressed += AdvanceOneTick;
@@ -181,24 +180,25 @@ public partial class BootstrapPanel : Control
 
         var resetButton = CreateButton("Reset Seed");
         resetButton.Pressed += ResetSeed;
-        sidebar.AddChild(resetButton);
+        testStack.AddChild(resetButton);
 
         _testProbe = CreateLog();
         _testProbe.CustomMinimumSize = new Vector2(0, layout.ProbeHeight);
-        sidebar.AddChild(_testProbe);
+        testStack.AddChild(_testProbe);
+        sidebar.AddChild(CreateSectionPanel("System Test Bench", testStack));
 
-        sidebar.AddChild(CreateSectionLabel("Map Mode"));
-        sidebar.AddChild(CreateSectionHint("Routes shows capacity, Profit shows this-tick cash, Demand shows city shortage pressure from local stock and reorder policy."));
+        var mapModeStack = CreateSectionStack();
+        mapModeStack.AddChild(CreateSectionHint("Routes shows capacity, Profit shows this-tick cash, Demand shows city shortage pressure from local stock and reorder policy."));
         var mapModes = new HBoxContainer();
         mapModes.AddThemeConstantOverride("separation", 6);
-        sidebar.AddChild(mapModes);
+        mapModeStack.AddChild(mapModes);
         AddMapModeButton(mapModes, "Routes", PrototypeMapMode.Routes);
         AddMapModeButton(mapModes, "Profit", PrototypeMapMode.Profit);
         AddMapModeButton(mapModes, "Demand", PrototypeMapMode.Demand);
+        sidebar.AddChild(CreateSectionPanel("Map Mode", mapModeStack));
 
-        sidebar.AddChild(CreateSectionLabel("Route Contract"));
-        sidebar.AddChild(CreateSectionHint("Contracts are concrete logistics orders: source warehouse stock, destination demand, capacity, transport cost, and expected net."));
-        var contractStack = CreateStack();
+        var contractStack = CreateSectionStack();
+        contractStack.AddChild(CreateSectionHint("Contracts are concrete logistics orders: source warehouse stock, destination demand, capacity, transport cost, and expected net."));
         contractStack.AddThemeConstantOverride("separation", 6);
         _contractSummary = CreateInlineLabel("");
         contractStack.AddChild(_contractSummary);
@@ -214,32 +214,27 @@ public partial class BootstrapPanel : Control
         _contractActionButton = CreateButton("Select Contract");
         _contractActionButton.Pressed += SelectVisibleRouteContract;
         contractStack.AddChild(_contractActionButton);
-        sidebar.AddChild(contractStack);
+        sidebar.AddChild(CreateSectionPanel("Route Contract", contractStack));
 
-        sidebar.AddChild(CreateSectionLabel("Inspector"));
         _inspector = CreateLog();
         _inspector.CustomMinimumSize = new Vector2(0, layout.InspectorHeight);
-        sidebar.AddChild(_inspector);
+        sidebar.AddChild(CreateSectionPanel("Inspector", _inspector));
 
-        sidebar.AddChild(CreateSectionLabel("Market Pressure"));
         _warnings = CreateLog();
         _warnings.CustomMinimumSize = new Vector2(0, layout.WarningHeight);
-        sidebar.AddChild(_warnings);
+        sidebar.AddChild(CreateSectionPanel("Market Pressure", _warnings));
 
-        sidebar.AddChild(CreateSectionLabel("Warehouse Policy"));
         _policy = CreateLog();
         _policy.CustomMinimumSize = new Vector2(0, layout.PolicyHeight);
-        sidebar.AddChild(_policy);
+        sidebar.AddChild(CreateSectionPanel("Warehouse Policy", _policy));
 
-        sidebar.AddChild(CreateSectionLabel("City Network"));
         _cities = CreateLog();
         _cities.CustomMinimumSize = new Vector2(0, layout.CitiesHeight);
-        sidebar.AddChild(_cities);
+        sidebar.AddChild(CreateSectionPanel("City Network", _cities));
 
-        sidebar.AddChild(CreateSectionLabel("Event Ledger"));
         _ledger = CreateLog();
         _ledger.SizeFlagsVertical = SizeFlags.ExpandFill;
-        sidebar.AddChild(_ledger);
+        sidebar.AddChild(CreateSectionPanel("Event Ledger", _ledger, verticalExpand: true, minimumHeight: 160));
     }
 
     private void BuildFailureView(Exception ex)
@@ -780,12 +775,12 @@ public partial class BootstrapPanel : Control
             return new LayoutProfile(
                 24,
                 18,
-                new Vector2(1120, 760),
-                520,
-                220,
-                124,
-                132,
-                130,
+                new Vector2(1050, 760),
+                640,
+                214,
+                118,
+                126,
+                126,
                 116);
         }
 
@@ -794,8 +789,8 @@ public partial class BootstrapPanel : Control
             return new LayoutProfile(
                 20,
                 16,
-                new Vector2(900, 620),
-                460,
+                new Vector2(860, 620),
+                540,
                 190,
                 108,
                 118,
@@ -807,7 +802,7 @@ public partial class BootstrapPanel : Control
             16,
             12,
             new Vector2(720, 520),
-            400,
+            430,
             156,
             84,
             96,
@@ -824,13 +819,47 @@ public partial class BootstrapPanel : Control
         };
     }
 
+    private static VBoxContainer CreateSectionStack()
+    {
+        var stack = CreateStack();
+        stack.AddThemeConstantOverride("separation", 8);
+        return stack;
+    }
+
     private static Button CreateButton(string text)
     {
-        return new Button
+        var button = new Button
         {
             Text = text,
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             CustomMinimumSize = new Vector2(0, 34)
+        };
+        button.AddThemeStyleboxOverride("normal", CreateButtonStyle(new Color(0.105f, 0.115f, 0.112f, 1.0f), new Color(0.22f, 0.24f, 0.23f, 1.0f)));
+        button.AddThemeStyleboxOverride("hover", CreateButtonStyle(new Color(0.145f, 0.165f, 0.155f, 1.0f), new Color(0.48f, 0.39f, 0.20f, 1.0f)));
+        button.AddThemeStyleboxOverride("pressed", CreateButtonStyle(new Color(0.04f, 0.045f, 0.043f, 1.0f), new Color(0.73f, 0.56f, 0.22f, 1.0f)));
+        button.AddThemeColorOverride("font_color", new Color(0.92f, 0.92f, 0.86f, 1.0f));
+        button.AddThemeColorOverride("font_pressed_color", new Color(0.98f, 0.83f, 0.38f, 1.0f));
+        return button;
+    }
+
+    private static StyleBoxFlat CreateButtonStyle(Color background, Color border)
+    {
+        return new StyleBoxFlat
+        {
+            BgColor = background,
+            BorderColor = border,
+            BorderWidthLeft = 1,
+            BorderWidthTop = 1,
+            BorderWidthRight = 1,
+            BorderWidthBottom = 1,
+            CornerRadiusBottomLeft = 4,
+            CornerRadiusBottomRight = 4,
+            CornerRadiusTopLeft = 4,
+            CornerRadiusTopRight = 4,
+            ContentMarginLeft = 8,
+            ContentMarginTop = 5,
+            ContentMarginRight = 8,
+            ContentMarginBottom = 5
         };
     }
 
@@ -852,6 +881,65 @@ public partial class BootstrapPanel : Control
         label.AddThemeFontSizeOverride("font_size", 15);
         label.AddThemeColorOverride("font_color", new Color(0.89f, 0.83f, 0.67f, 1.0f));
         return label;
+    }
+
+    private static PanelContainer CreateSectionPanel(string title, Control content, bool verticalExpand = false, float minimumHeight = 0.0f)
+    {
+        var panel = new PanelContainer
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill
+        };
+        if (verticalExpand)
+        {
+            panel.SizeFlagsVertical = SizeFlags.ExpandFill;
+        }
+
+        if (minimumHeight > 0.0f)
+        {
+            panel.CustomMinimumSize = new Vector2(0, minimumHeight);
+        }
+
+        var style = new StyleBoxFlat
+        {
+            BgColor = new Color(0.070f, 0.078f, 0.075f, 0.96f),
+            BorderColor = new Color(0.36f, 0.28f, 0.14f, 0.95f),
+            BorderWidthLeft = 1,
+            BorderWidthTop = 1,
+            BorderWidthRight = 1,
+            BorderWidthBottom = 1,
+            CornerRadiusBottomLeft = 5,
+            CornerRadiusBottomRight = 5,
+            CornerRadiusTopLeft = 5,
+            CornerRadiusTopRight = 5,
+            ContentMarginLeft = 12,
+            ContentMarginTop = 10,
+            ContentMarginRight = 12,
+            ContentMarginBottom = 10
+        };
+        panel.AddThemeStyleboxOverride("panel", style);
+
+        var stack = CreateSectionStack();
+        if (verticalExpand)
+        {
+            stack.SizeFlagsVertical = SizeFlags.ExpandFill;
+            content.SizeFlagsVertical = SizeFlags.ExpandFill;
+        }
+
+        var header = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        var titleLabel = CreateSectionLabel(title);
+        titleLabel.SizeFlagsHorizontal = SizeFlags.ExpandFill;
+        header.AddChild(titleLabel);
+        var accent = new ColorRect
+        {
+            Color = new Color(0.76f, 0.58f, 0.24f, 0.78f),
+            CustomMinimumSize = new Vector2(42, 2),
+            SizeFlagsVertical = SizeFlags.ShrinkCenter
+        };
+        header.AddChild(accent);
+        stack.AddChild(header);
+        stack.AddChild(content);
+        panel.AddChild(stack);
+        return panel;
     }
 
     private static Label CreateSectionHint(string text)
@@ -938,7 +1026,7 @@ public partial class BootstrapPanel : Control
             SelectionEnabled = true,
             SizeFlagsHorizontal = SizeFlags.ExpandFill
         };
-        log.AddThemeFontSizeOverride("normal_font_size", 12);
+        log.AddThemeFontSizeOverride("normal_font_size", 13);
         log.AddThemeColorOverride("default_color", new Color(0.88f, 0.89f, 0.82f, 1.0f));
         return log;
     }
@@ -1443,12 +1531,7 @@ public partial class PrototypeMapView : Control
             var point = CellTopLeftFor(snapshot, terrain.X, terrain.Y);
             var color = TerrainColor(terrain, _mapMode);
             DrawRect(new Rect2(point, new Vector2(cell + 0.8f, cell + 0.8f)), color);
-
-            if (!terrain.IsWater && cell >= 18.0f)
-            {
-                var texture = TerrainTexture(terrain);
-                DrawCircle(point + new Vector2(cell * 0.72f, cell * 0.30f), Math.Max(1.4f, cell * 0.045f), texture);
-            }
+            DrawTerrainDetail(terrain, point, cell);
         }
 
         DrawCoastlines(snapshot, cell);
@@ -1493,7 +1576,7 @@ public partial class PrototypeMapView : Control
         var origin = MapOrigin(snapshot);
         var width = snapshot.World.Width * cell;
         var height = snapshot.World.Height * cell;
-        var grid = new Color(0.04f, 0.045f, 0.04f, 0.14f);
+        var grid = new Color(0.04f, 0.050f, 0.050f, 0.08f);
 
         for (var x = 4; x < snapshot.World.Width; x += 4)
         {
@@ -1515,42 +1598,72 @@ public partial class PrototypeMapView : Control
 
     private static Color TerrainColor(TerrainCell terrain, PrototypeMapMode mapMode)
     {
-        var fade = mapMode == PrototypeMapMode.Demand ? 0.74f : 1.0f;
+        var fade = mapMode == PrototypeMapMode.Demand ? 0.72f : 1.0f;
         if (terrain.IsWater)
         {
             var depth = (float)Math.Clamp((0.36 - terrain.Height) * 1.8, 0.0, 0.35);
-            return new Color(0.12f - depth * 0.10f, 0.27f - depth * 0.10f, 0.33f - depth * 0.05f, 1.0f);
+            return new Color(0.075f - depth * 0.04f, 0.210f - depth * 0.06f, 0.270f - depth * 0.05f, 1.0f);
         }
 
         if (terrain.Height > 0.68)
         {
-            return new Color(0.45f * fade, 0.43f * fade, 0.34f * fade, 1.0f);
+            return new Color(0.49f * fade, 0.47f * fade, 0.35f * fade, 1.0f);
         }
 
         if (terrain.Moisture < 0.32)
         {
-            return new Color(0.58f * fade, 0.53f * fade, 0.34f * fade, 1.0f);
+            return new Color(0.61f * fade, 0.56f * fade, 0.35f * fade, 1.0f);
         }
 
         if (terrain.Fertility > 0.58)
         {
-            return new Color(0.43f * fade, 0.55f * fade, 0.35f * fade, 1.0f);
+            return new Color(0.39f * fade, 0.57f * fade, 0.34f * fade, 1.0f);
         }
 
         return new Color(
-            (0.48f + (float)terrain.Fertility * 0.12f) * fade,
-            (0.49f + (float)terrain.Moisture * 0.10f) * fade,
-            (0.36f + (float)terrain.Fertility * 0.06f) * fade,
+            (0.45f + (float)terrain.Fertility * 0.12f) * fade,
+            (0.50f + (float)terrain.Moisture * 0.11f) * fade,
+            (0.34f + (float)terrain.Fertility * 0.06f) * fade,
             1.0f);
     }
 
-    private static Color TerrainTexture(TerrainCell terrain)
+    private void DrawTerrainDetail(TerrainCell terrain, Vector2 point, float cell)
     {
+        if (cell < 18.0f)
+        {
+            return;
+        }
+
         var hash = terrain.X * 73 + terrain.Y * 151;
-        var alpha = 0.05f + (hash & 3) * 0.018f;
-        return terrain.Height > 0.68
-            ? new Color(0.18f, 0.17f, 0.13f, alpha + 0.04f)
-            : new Color(0.78f, 0.72f, 0.48f, alpha);
+        if (terrain.IsWater)
+        {
+            if ((hash & 3) == 0)
+            {
+                DrawLine(point + new Vector2(cell * 0.12f, cell * 0.68f), point + new Vector2(cell * 0.82f, cell * 0.58f), new Color(0.40f, 0.65f, 0.70f, 0.10f), 1.0f, true);
+            }
+
+            return;
+        }
+
+        var alpha = 0.06f + (hash & 3) * 0.018f;
+        if (terrain.Height > 0.68)
+        {
+            var ridge = new Color(0.18f, 0.17f, 0.13f, alpha + 0.06f);
+            DrawLine(point + new Vector2(cell * 0.18f, cell * 0.70f), point + new Vector2(cell * 0.48f, cell * 0.24f), ridge, 1.2f, true);
+            DrawLine(point + new Vector2(cell * 0.48f, cell * 0.24f), point + new Vector2(cell * 0.78f, cell * 0.68f), ridge, 1.2f, true);
+            return;
+        }
+
+        if (terrain.Fertility > 0.58 && (hash & 1) == 0)
+        {
+            var grove = new Color(0.12f, 0.23f, 0.12f, alpha + 0.05f);
+            DrawCircle(point + new Vector2(cell * 0.35f, cell * 0.42f), Math.Max(1.8f, cell * 0.055f), grove);
+            DrawCircle(point + new Vector2(cell * 0.52f, cell * 0.34f), Math.Max(1.4f, cell * 0.045f), grove);
+            DrawCircle(point + new Vector2(cell * 0.60f, cell * 0.52f), Math.Max(1.4f, cell * 0.045f), grove);
+            return;
+        }
+
+        DrawCircle(point + new Vector2(cell * 0.72f, cell * 0.30f), Math.Max(1.3f, cell * 0.040f), new Color(0.78f, 0.72f, 0.48f, alpha));
     }
 
     private void DrawRoutes(PrototypeSnapshot snapshot)
@@ -1587,7 +1700,9 @@ public partial class PrototypeMapView : Control
                 width += 1.2f;
             }
 
+            DrawLine(start, end, new Color(0.025f, 0.028f, 0.024f, alpha * 0.72f), width + 3.4f, true);
             DrawLine(start, end, color, width, true);
+            DrawRouteArrow(start, end, color, width, selected || hovered || related);
             DrawRoutePulse(start, end, cash >= 0 ? color.Lightened(0.25f) : color, selected || hovered || related);
 
             if (cash < 0)
@@ -1616,6 +1731,7 @@ public partial class PrototypeMapView : Control
 
     private void DrawCities(PrototypeSnapshot snapshot)
     {
+        var labels = new List<(PrototypeCityView City, Vector2 Point, string Kind, double Pressure, bool Selected, bool Hovered, bool Related)>();
         foreach (var city in snapshot.Cities)
         {
             var point = PointFor(snapshot, city.X, city.Y);
@@ -1648,12 +1764,29 @@ public partial class PrototypeMapView : Control
                 DrawWarningMark(point + new Vector2(radius + 8.0f, -radius - 5.0f));
             }
 
+            labels.Add((city, point, kind, pressure, selected, hovered, related));
+        }
+
+        var occupiedLabels = new List<Rect2>
+        {
+            new(new Vector2(12, 12), new Vector2(Size.X - 24, 58)),
+            new(new Vector2(14, 78), new Vector2(150, 330)),
+            new(new Vector2(14, Size.Y - 190), new Vector2(210, 174))
+        };
+
+        foreach (var cityLabel in labels.OrderByDescending(label => label.Selected || label.Hovered || label.Related).ThenBy(label => label.City.Id, StringComparer.Ordinal))
+        {
+            var city = cityLabel.City;
+            var pressure = cityLabel.Pressure;
+            var selected = cityLabel.Selected;
+            var hovered = cityLabel.Hovered;
+            var related = cityLabel.Related;
             if (selected || hovered || related || _mapMode == PrototypeMapMode.Routes || (_mapMode == PrototypeMapMode.Demand && pressure > 0.25))
             {
-                var label = selected || hovered || related || _mapMode == PrototypeMapMode.Demand
+                var text = selected || hovered || related || _mapMode == PrototypeMapMode.Demand
                     ? CityMapLabel(city, pressure)
                     : city.Name;
-                DrawMapLabel(point + new Vector2(12, -10), label);
+                DrawPlacedMapLabel(cityLabel.Point, text, occupiedLabels, city.X < snapshot.World.Width / 2, CityKindColor(cityLabel.Kind, city.SupplySatisfaction));
             }
         }
     }
@@ -1662,53 +1795,76 @@ public partial class PrototypeMapView : Control
     {
         var modeText = _mapMode switch
         {
-            PrototypeMapMode.Routes => "Routes: line width is capacity; blue coastal routes, ochre roads.",
-            PrototypeMapMode.Profit => "Profit: green routes made money this tick; red routes lost cash.",
-            _ => "Demand: red city rings and routes show local shortage pressure from reorder policy."
+            PrototypeMapMode.Routes => "Capacity routes",
+            PrototypeMapMode.Profit => "Cashflow routes",
+            _ => "Demand pressure"
         };
-        var worldText = $"World {snapshot.World.Width}x{snapshot.World.Height} | seed {snapshot.World.Seed} | {snapshot.World.WorldGenVersion}";
-        DrawMapLabel(new Vector2(18, 30), $"{modeText}  {worldText}", minWidth: Math.Min(Size.X - 52, 760));
+        var panel = new Rect2(new Vector2(14, 14), new Vector2(Size.X - 28, 58));
+        DrawRect(panel, new Color(0.038f, 0.043f, 0.041f, 0.93f));
+        DrawRect(new Rect2(panel.Position, new Vector2(panel.Size.X, 1)), new Color(0.74f, 0.58f, 0.25f, 0.68f));
+        DrawRect(new Rect2(panel.Position + new Vector2(0, panel.Size.Y - 1), new Vector2(panel.Size.X, 1)), new Color(0.18f, 0.15f, 0.09f, 0.72f));
+
+        var compassCenter = panel.Position + new Vector2(28, 29);
+        DrawCircle(compassCenter, 14.0f, new Color(0.10f, 0.085f, 0.050f, 0.88f));
+        DrawLine(compassCenter + new Vector2(0, -10), compassCenter + new Vector2(0, 10), new Color(0.86f, 0.70f, 0.34f, 0.90f), 1.4f, true);
+        DrawLine(compassCenter + new Vector2(-10, 0), compassCenter + new Vector2(10, 0), new Color(0.86f, 0.70f, 0.34f, 0.90f), 1.4f, true);
+        DrawString(_font, compassCenter + new Vector2(-4, 5), "N", HorizontalAlignment.Left, 16, 10, new Color(0.94f, 0.84f, 0.55f, 1.0f));
+
+        DrawString(_font, panel.Position + new Vector2(52, 25), "Charters of Trade", HorizontalAlignment.Left, 260, 20, new Color(0.95f, 0.84f, 0.56f, 1.0f));
+        DrawString(_font, panel.Position + new Vector2(52, 46), "Prototype Systems Loop", HorizontalAlignment.Left, 260, 11, new Color(0.66f, 0.72f, 0.69f, 1.0f));
+        DrawHudPill(panel.Position + new Vector2(326, 17), modeText, 142);
+        DrawHudPill(panel.Position + new Vector2(476, 17), $"Seed {snapshot.World.Seed}", 124);
+        DrawHudPill(panel.Position + new Vector2(608, 17), $"{snapshot.World.WorldGenVersion}", 112);
     }
 
     private void DrawLegend(PrototypeSnapshot snapshot)
     {
-        var origin = new Vector2(18, Size.Y - 122);
-        DrawRect(new Rect2(origin - new Vector2(10, 16), new Vector2(288, 116)), new Color(0.12f, 0.09f, 0.055f, 0.74f));
-        DrawString(_font, origin, $"{_mapMode} mode", HorizontalAlignment.Left, 180, 13);
+        var origin = new Vector2(18, 92);
+        var panel = new Rect2(origin - new Vector2(10, 14), new Vector2(150, 306));
+        DrawRect(panel, new Color(0.050f, 0.055f, 0.051f, 0.86f));
+        DrawRect(new Rect2(panel.Position, new Vector2(1, panel.Size.Y)), new Color(0.65f, 0.50f, 0.21f, 0.62f));
+        DrawString(_font, origin, "Map Mode", HorizontalAlignment.Left, 118, 13, new Color(0.91f, 0.82f, 0.61f, 1.0f));
+        DrawModeRailRow(origin + new Vector2(0, 24), "Routes", PrototypeMapMode.Routes);
+        DrawModeRailRow(origin + new Vector2(0, 52), "Profit", PrototypeMapMode.Profit);
+        DrawModeRailRow(origin + new Vector2(0, 80), "Demand", PrototypeMapMode.Demand);
+
+        var guide = origin + new Vector2(0, 126);
+        DrawString(_font, guide, "Signals", HorizontalAlignment.Left, 118, 13, new Color(0.91f, 0.82f, 0.61f, 1.0f));
 
         if (_mapMode == PrototypeMapMode.Routes)
         {
-            DrawLine(origin + new Vector2(0, 22), origin + new Vector2(44, 22), new Color(0.22f, 0.45f, 0.63f, 1.0f), 5.0f, true);
-            DrawString(_font, origin + new Vector2(54, 27), "coastal capacity", HorizontalAlignment.Left, 190, 12);
-            DrawLine(origin + new Vector2(0, 46), origin + new Vector2(44, 46), new Color(0.56f, 0.38f, 0.18f, 1.0f), 3.0f, true);
-            DrawString(_font, origin + new Vector2(54, 51), "road capacity", HorizontalAlignment.Left, 190, 12);
+            DrawLine(guide + new Vector2(0, 24), guide + new Vector2(42, 24), new Color(0.22f, 0.45f, 0.63f, 1.0f), 5.0f, true);
+            DrawString(_font, guide + new Vector2(50, 29), "coast cap", HorizontalAlignment.Left, 82, 12);
+            DrawLine(guide + new Vector2(0, 50), guide + new Vector2(42, 50), new Color(0.56f, 0.38f, 0.18f, 1.0f), 3.0f, true);
+            DrawString(_font, guide + new Vector2(50, 55), "road cap", HorizontalAlignment.Left, 82, 12);
         }
         else if (_mapMode == PrototypeMapMode.Profit)
         {
-            DrawLine(origin + new Vector2(0, 22), origin + new Vector2(44, 22), new Color(0.21f, 0.55f, 0.42f, 1.0f), 4.0f, true);
-            DrawString(_font, origin + new Vector2(54, 27), "profitable movement", HorizontalAlignment.Left, 190, 12);
-            DrawLine(origin + new Vector2(0, 46), origin + new Vector2(44, 46), new Color(0.62f, 0.17f, 0.14f, 1.0f), 4.0f, true);
-            DrawString(_font, origin + new Vector2(54, 51), "route losing money", HorizontalAlignment.Left, 190, 12);
+            DrawLine(guide + new Vector2(0, 24), guide + new Vector2(42, 24), new Color(0.21f, 0.55f, 0.42f, 1.0f), 4.0f, true);
+            DrawString(_font, guide + new Vector2(50, 29), "profit", HorizontalAlignment.Left, 82, 12);
+            DrawLine(guide + new Vector2(0, 50), guide + new Vector2(42, 50), new Color(0.62f, 0.17f, 0.14f, 1.0f), 4.0f, true);
+            DrawString(_font, guide + new Vector2(50, 55), "loss", HorizontalAlignment.Left, 82, 12);
         }
         else
         {
-            DrawCircle(origin + new Vector2(16, 24), 7.0f, new Color(0.62f, 0.17f, 0.14f, 1.0f));
-            DrawArc(origin + new Vector2(16, 24), 14.0f, 0.0f, Mathf.Tau * 0.58f, 24, new Color(0.62f, 0.17f, 0.14f, 0.78f), 2.0f, true);
-            DrawString(_font, origin + new Vector2(54, 29), "unmet demand pressure", HorizontalAlignment.Left, 190, 12);
-            DrawLine(origin + new Vector2(0, 48), origin + new Vector2(44, 48), new Color(0.71f, 0.48f, 0.14f, 1.0f), 4.0f, true);
-            DrawString(_font, origin + new Vector2(54, 53), "pressure on route", HorizontalAlignment.Left, 190, 12);
+            DrawCircle(guide + new Vector2(16, 24), 7.0f, new Color(0.62f, 0.17f, 0.14f, 1.0f));
+            DrawArc(guide + new Vector2(16, 24), 14.0f, 0.0f, Mathf.Tau * 0.58f, 24, new Color(0.62f, 0.17f, 0.14f, 0.78f), 2.0f, true);
+            DrawString(_font, guide + new Vector2(50, 29), "shortage", HorizontalAlignment.Left, 82, 12);
+            DrawLine(guide + new Vector2(0, 50), guide + new Vector2(42, 50), new Color(0.71f, 0.48f, 0.14f, 1.0f), 4.0f, true);
+            DrawString(_font, guide + new Vector2(50, 55), "pressure", HorizontalAlignment.Left, 82, 12);
         }
 
-        DrawCityStamp(origin + new Vector2(12, 74), "charter_town", 7.0f, CityKindColor("charter_town", 1.0));
-        DrawString(_font, origin + new Vector2(32, 79), "C charter", HorizontalAlignment.Left, 82, 12);
-        DrawCityStamp(origin + new Vector2(118, 74), "port", 6.0f, CityKindColor("port", 1.0));
-        DrawString(_font, origin + new Vector2(136, 79), "P port", HorizontalAlignment.Left, 70, 12);
-        DrawCityStamp(origin + new Vector2(206, 74), "market_town", 6.0f, CityKindColor("market_town", 1.0));
-        DrawString(_font, origin + new Vector2(224, 79), "M market", HorizontalAlignment.Left, 70, 12);
+        var cityLegend = origin + new Vector2(0, 214);
+        DrawCityStamp(cityLegend + new Vector2(12, 0), "charter_town", 7.0f, CityKindColor("charter_town", 1.0));
+        DrawString(_font, cityLegend + new Vector2(32, 5), "charter", HorizontalAlignment.Left, 82, 12);
+        DrawCityStamp(cityLegend + new Vector2(12, 28), "port", 6.0f, CityKindColor("port", 1.0));
+        DrawString(_font, cityLegend + new Vector2(32, 33), "port", HorizontalAlignment.Left, 82, 12);
+        DrawCityStamp(cityLegend + new Vector2(12, 56), "market_town", 6.0f, CityKindColor("market_town", 1.0));
+        DrawString(_font, cityLegend + new Vector2(32, 61), "market", HorizontalAlignment.Left, 82, 12);
 
         if (_selectedCityId is null && _selectedRouteId is null)
         {
-            DrawMapLabel(new Vector2(18, 58), "Select a city or route for system-linked inspector details.", minWidth: 342);
+            DrawMapLabel(new Vector2(178, 92), "Select a city or route for linked inspector details.", minWidth: 292);
         }
     }
 
@@ -1719,6 +1875,12 @@ public partial class PrototypeMapView : Control
             var city = snapshot.Cities.FirstOrDefault(city => city.Id == _hoveredCityId);
             if (city is not null)
             {
+                var pressure = SupplyPressure(city);
+                if (_mapMode == PrototypeMapMode.Routes || _mapMode == PrototypeMapMode.Demand || city.Id == _selectedCityId || pressure > 0.25)
+                {
+                    return;
+                }
+
                 DrawMapLabel(PointFor(snapshot, city.X, city.Y) + new Vector2(12, -10), CityMapLabel(city, SupplyPressure(city)));
             }
         }
@@ -1751,6 +1913,31 @@ public partial class PrototypeMapView : Control
         }
     }
 
+    private void DrawRouteArrow(Vector2 start, Vector2 end, Color color, float width, bool emphasized)
+    {
+        var direction = end - start;
+        var length = direction.Length();
+        if (length <= 10.0f)
+        {
+            return;
+        }
+
+        var normal = direction / length;
+        var perpendicular = new Vector2(-normal.Y, normal.X);
+        var center = start + direction * 0.58f;
+        var size = emphasized ? 8.5f : 6.5f;
+        var points = new[]
+        {
+            center + normal * size,
+            center - normal * size * 0.74f + perpendicular * size * 0.54f,
+            center - normal * size * 0.74f - perpendicular * size * 0.54f
+        };
+        var arrow = color.Lightened(emphasized ? 0.24f : 0.14f);
+        arrow.A = Math.Min(1.0f, color.A + 0.07f);
+        DrawColoredPolygon(points, arrow);
+        DrawPolyline(new[] { points[0], points[1], points[2], points[0] }, new Color(0.030f, 0.026f, 0.018f, 0.70f), Math.Max(1.0f, width * 0.22f), true);
+    }
+
     private void DrawRouteCashLabel(Vector2 start, Vector2 end, decimal cash)
     {
         if (cash == 0)
@@ -1769,12 +1956,99 @@ public partial class PrototypeMapView : Control
             : $"{city.Name} | supply {city.SupplySatisfaction:0.00}";
     }
 
-    private void DrawMapLabel(Vector2 position, string text, float minWidth = 72.0f)
+    private Rect2 DrawMapLabel(Vector2 position, string text, float minWidth = 72.0f, Color? accent = null)
     {
-        var size = new Vector2(Math.Max(minWidth, text.Length * 6.7f), 22);
-        DrawRect(new Rect2(position + new Vector2(-6, -18), size), new Color(0.055f, 0.053f, 0.045f, 0.84f));
-        DrawRect(new Rect2(position + new Vector2(-6, 3), new Vector2(size.X, 1)), new Color(0.62f, 0.50f, 0.28f, 0.42f));
-        DrawString(_font, position, text, HorizontalAlignment.Left, size.X - 8, 12);
+        var clamped = ClampMapLabelPosition(position, text, minWidth);
+        var rect = MapLabelRect(clamped, text, minWidth);
+        DrawRect(new Rect2(rect.Position + new Vector2(2, 2), rect.Size), new Color(0.0f, 0.0f, 0.0f, 0.30f));
+        DrawRect(rect, new Color(0.042f, 0.046f, 0.041f, 0.92f));
+        DrawRect(new Rect2(rect.Position, new Vector2(3, rect.Size.Y)), accent ?? new Color(0.62f, 0.50f, 0.28f, 0.72f));
+        DrawRect(new Rect2(rect.Position + new Vector2(0, rect.Size.Y - 1), new Vector2(rect.Size.X, 1)), new Color(0.72f, 0.56f, 0.25f, 0.38f));
+        DrawString(_font, clamped, text, HorizontalAlignment.Left, rect.Size.X - 10, 12, new Color(0.94f, 0.95f, 0.89f, 1.0f));
+        return rect;
+    }
+
+    private void DrawPlacedMapLabel(Vector2 anchor, string text, List<Rect2> occupiedLabels, bool preferRight, Color accent)
+    {
+        var size = MeasureMapLabel(text);
+        var right = new[]
+        {
+            new Vector2(18, -10),
+            new Vector2(18, 20),
+            new Vector2(-size.X - 14, -10),
+            new Vector2(-size.X - 14, 20),
+            new Vector2(-size.X / 2.0f, -34)
+        };
+        var left = new[]
+        {
+            new Vector2(-size.X - 14, -10),
+            new Vector2(-size.X - 14, 20),
+            new Vector2(18, -10),
+            new Vector2(18, 20),
+            new Vector2(-size.X / 2.0f, -34)
+        };
+
+        foreach (var offset in preferRight ? right : left)
+        {
+            var position = ClampMapLabelPosition(anchor + offset, text, size.X);
+            var rect = MapLabelRect(position, text, size.X);
+            if (IntersectsAny(rect, occupiedLabels))
+            {
+                continue;
+            }
+
+            occupiedLabels.Add(rect.Grow(4.0f));
+            DrawMapLabel(position, text, size.X, accent);
+            return;
+        }
+
+        var fallback = ClampMapLabelPosition(anchor + new Vector2(16, -10), text, size.X);
+        var fallbackRect = DrawMapLabel(fallback, text, size.X, accent);
+        occupiedLabels.Add(fallbackRect.Grow(4.0f));
+    }
+
+    private Vector2 ClampMapLabelPosition(Vector2 position, string text, float minWidth)
+    {
+        var rect = MapLabelRect(position, text, minWidth);
+        var x = Math.Clamp(position.X, 8.0f - (rect.Position.X - position.X), Size.X - rect.Size.X - 8.0f - (rect.Position.X - position.X));
+        var y = Math.Clamp(position.Y, 24.0f, Size.Y - 8.0f);
+        return new Vector2(x, y);
+    }
+
+    private static Rect2 MapLabelRect(Vector2 position, string text, float minWidth)
+    {
+        return new Rect2(position + new Vector2(-6, -18), MeasureMapLabel(text, minWidth));
+    }
+
+    private static Vector2 MeasureMapLabel(string text, float minWidth = 72.0f)
+    {
+        return new Vector2(Math.Max(minWidth, text.Length * 6.7f + 12.0f), 24.0f);
+    }
+
+    private static bool IntersectsAny(Rect2 rect, IEnumerable<Rect2> occupiedLabels)
+    {
+        return occupiedLabels.Any(occupied => occupied.Intersects(rect));
+    }
+
+    private void DrawHudPill(Vector2 position, string text, float width)
+    {
+        var rect = new Rect2(position, new Vector2(width, 26));
+        DrawRect(rect, new Color(0.075f, 0.083f, 0.078f, 0.94f));
+        DrawRect(new Rect2(rect.Position, new Vector2(rect.Size.X, 1)), new Color(0.63f, 0.50f, 0.25f, 0.42f));
+        DrawString(_font, position + new Vector2(10, 18), text, HorizontalAlignment.Left, width - 18, 12, new Color(0.90f, 0.91f, 0.84f, 1.0f));
+    }
+
+    private void DrawModeRailRow(Vector2 position, string text, PrototypeMapMode mode)
+    {
+        var active = _mapMode == mode;
+        var rect = new Rect2(position, new Vector2(118, 22));
+        DrawRect(rect, active ? new Color(0.13f, 0.105f, 0.055f, 0.92f) : new Color(0.070f, 0.076f, 0.070f, 0.72f));
+        if (active)
+        {
+            DrawRect(new Rect2(rect.Position, new Vector2(3, rect.Size.Y)), new Color(0.82f, 0.61f, 0.24f, 0.95f));
+        }
+
+        DrawString(_font, position + new Vector2(10, 16), text, HorizontalAlignment.Left, 94, 12, active ? new Color(0.98f, 0.86f, 0.54f, 1.0f) : new Color(0.72f, 0.75f, 0.70f, 1.0f));
     }
 
     private PrototypeCityView? FindCityAt(Vector2 position)
