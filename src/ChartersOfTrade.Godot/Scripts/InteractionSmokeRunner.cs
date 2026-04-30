@@ -182,6 +182,8 @@ public partial class InteractionSmokeRunner : Control
 
         await PressButtonAsync(selectContractButton);
         AssertSmoke(AnyVisibleTextContains(uiRoot, "Selected contract:"), "Selected contract summary did not appear.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "Active route operation"), "Route operation summary did not appear after selecting a contract.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "Route Operation:"), "System probe did not report route operation state.");
 
         await PressButtonAsync(advanceButton);
         AssertSmoke(GetMetricValue(uiRoot, "Tick") == "1", "Advance Tick did not advance the tick metric to 1.");

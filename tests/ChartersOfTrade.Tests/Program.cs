@@ -29,6 +29,9 @@ var tests = new (string Name, Action Run)[]
     ("prototype route contract selection affects logistics", PrototypeRouteContractSelectionAffectsLogistics),
     ("prototype route contract rejects invalid ids", PrototypeRouteContractRejectsInvalidIds),
     ("prototype selected route contract stays deterministic", PrototypeSelectedRouteContractStaysDeterministic),
+    ("prototype route operations are deterministic", PrototypeRouteOperationsAreDeterministic),
+    ("prototype route operation selection exposes active state", PrototypeRouteOperationSelectionExposesActiveState),
+    ("prototype route operation pauses when cargo is blocked", PrototypeRouteOperationPausesWhenCargoIsBlocked),
     ("prototype route policy hash is deterministic", PrototypeRoutePolicyHashIsDeterministic),
     ("prototype route resource reservation filters contracts", PrototypeRouteResourceReservationFiltersContracts),
     ("prototype route priority boosts contract ordering", PrototypeRoutePriorityBoostsContractOrdering),
@@ -627,27 +630,23 @@ static void PrototypeRouteContractsAreDeterministic()
 static void PrototypeRouteContractSelectionAffectsLogistics()
 {
     var bridge = new SimulationBridge();
-    var automatic = bridge.CreatePrototypeSession(424242);
-    var automaticTick = automatic.AdvanceTick();
-
-    var controlled = bridge.CreatePrototypeSession(424242);
-    var contract = controlled.Current.AvailableContracts.Last();
+    var controlled = bridge.CreatePrototypeSession(20260429);
+    var contract = FindContract(controlled.Current, "Expected seed 20260429 to expose a dispatchable wood route operation.", candidate => candidate.ResourceId == "wood" && candidate.ExpectedNet > 0m);
     var unselectedHash = controlled.Current.SaveHash;
+    var automatic = bridge.CreatePrototypeSession(20260429);
 
     AssertTrue(controlled.SelectRouteContract(contract.Id), "Expected contract selection to succeed.");
     AssertEqual(contract.Id, controlled.Current.SelectedContractId);
-    AssertEqual(0, controlled.Current.Tick);
     AssertTrue(controlled.Current.SaveHash != unselectedHash, "Pending contract selection should be represented in the state hash.");
 
-    var controlledTick = controlled.AdvanceTick();
-    var controlledLogistics = controlledTick.Ledger
-        .Where(entry => entry.Tick == controlledTick.Tick && entry.Category == "Logistics")
-        .ToArray();
+    var dispatch = AdvanceUntilRouteOperationDelivery(controlled, contract.RouteId, contract.ResourceId);
+    while (automatic.Current.Tick < dispatch.Snapshot.Tick)
+    {
+        automatic.AdvanceTick();
+    }
 
-    AssertEqual(1, controlledLogistics.Length);
-    AssertTrue(controlledLogistics[0].RelatedId == contract.RouteId, "Expected selected contract route to drive logistics.");
-    AssertTrue(controlledLogistics[0].Message.Contains(contract.ResourceId, StringComparison.Ordinal), "Expected selected contract resource to be delivered.");
-    AssertTrue(automaticTick.SaveHash != controlledTick.SaveHash, "Selected contract should change the next logistics result.");
+    AssertTrue(dispatch.Delivery.CashDelta > 0m, "Selected route operation should produce positive logistics cash when it dispatches.");
+    AssertTrue(automatic.Current.SaveHash != dispatch.Snapshot.SaveHash, "Selected contract should change the next logistics result.");
 }
 
 static void PrototypeRouteContractRejectsInvalidIds()
@@ -681,6 +680,91 @@ static void PrototypeSelectedRouteContractStaysDeterministic()
     AssertEqual(first.Current.SaveHash, second.Current.SaveHash);
     AssertEqual(first.Current.Company.Cash, second.Current.Company.Cash);
     AssertEqual(ContractFingerprint(first.Current.AvailableContracts), ContractFingerprint(second.Current.AvailableContracts));
+}
+
+static void PrototypeRouteOperationsAreDeterministic()
+{
+    var bridge = new SimulationBridge();
+    var first = bridge.CreatePrototypeSession(424242);
+    var second = bridge.CreatePrototypeSession(424242);
+
+    AssertTrue(first.Current.RouteOperationCandidates.Count > 0, "Expected starter session to expose route operation candidates.");
+    AssertEqual(
+        RouteOperationFingerprint(first.Current.RouteOperationCandidates),
+        RouteOperationFingerprint(second.Current.RouteOperationCandidates));
+
+    for (var i = 1; i < first.Current.RouteOperationCandidates.Count; i++)
+    {
+        var previous = first.Current.RouteOperationCandidates[i - 1];
+        var current = first.Current.RouteOperationCandidates[i];
+        AssertTrue(previous.ShipmentPriority >= current.ShipmentPriority, "Route operations should sort by shipment priority first.");
+        if (previous.ShipmentPriority == current.ShipmentPriority)
+        {
+            AssertTrue(previous.ExpectedNet >= current.ExpectedNet, "Route operations should break priority ties by expected net.");
+            if (previous.ExpectedNet == current.ExpectedNet)
+            {
+                AssertTrue(string.CompareOrdinal(previous.Id, current.Id) <= 0, "Route operations should break net ties by id.");
+            }
+        }
+    }
+}
+
+static void PrototypeRouteOperationSelectionExposesActiveState()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(20260429);
+    var contract = FindContract(session.Current, "Expected seed 20260429 to expose a dispatchable wood route operation.", candidate => candidate.ResourceId == "wood" && candidate.ExpectedNet > 0m);
+    var initialHash = session.Current.SaveHash;
+
+    AssertTrue(session.SelectRouteContract(contract.Id), "Expected route contract selection to start an operation.");
+    var active = session.Current.ActiveRouteOperation;
+    AssertTrue(active is not null, "Expected selected route contract to expose an active route operation.");
+    AssertEqual(contract.Id, active!.SourceContractId);
+    AssertEqual(contract.RouteId, active.RouteId);
+    AssertEqual(contract.ResourceId, active.ResourceId);
+    AssertTrue(active.IsActive, "Selected operation should be marked active.");
+    AssertTrue(active.CanDispatch || active.PausedReason.Length > 0, "Active operation should explain readiness or pause state.");
+    AssertTrue(active.CapacityPerDay > 0, "Active operation should expose route capacity.");
+    AssertTrue(active.UnmetDemandServed <= active.ExpectedUnits, "Unmet demand served should not exceed dispatched units.");
+    AssertTrue(session.Current.SaveHash != initialHash, "Active route operation should affect the state hash through pending route contract state.");
+
+    var dispatch = AdvanceUntilRouteOperationDelivery(session, contract.RouteId, contract.ResourceId);
+    var tick = dispatch.Snapshot;
+    AssertEqual(contract.Id, tick.SelectedContractId);
+    AssertTrue(tick.ActiveRouteOperation is not null, "Active route operation should remain recurring after a tick.");
+    AssertTrue(dispatch.Delivery.Message.Contains("route operation delivered", StringComparison.Ordinal), "Selected route operation should drive an actual delivery ledger entry.");
+    AssertTrue(dispatch.Delivery.CashDelta > 0m, "Selected route operation delivery should contribute positive route cash.");
+
+    var hashWithOperation = tick.SaveHash;
+    AssertTrue(session.ClearRouteOperation(), "Expected active route operation to be clearable.");
+    AssertEqual<string?>(null, session.Current.SelectedContractId);
+    AssertTrue(session.Current.ActiveRouteOperation is null, "Clearing the operation should remove the active operation view.");
+    AssertTrue(session.Current.SaveHash != hashWithOperation, "Clearing the operation should change the state hash.");
+}
+
+static void PrototypeRouteOperationPausesWhenCargoIsBlocked()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(424242);
+    var operation = session.Current.RouteOperationCandidates.First();
+    var contract = session.Current.AvailableContracts.Single(candidate => candidate.Id == operation.SourceContractId);
+
+    AssertTrue(session.SelectRouteContract(contract.Id), "Expected route contract selection to start an operation.");
+    AssertTrue(session.SetRouteResourceReservation(contract.RouteId, contract.ResourceId, false), "Expected route policy to block the operation cargo.");
+
+    var blocked = session.Current.ActiveRouteOperation;
+    AssertTrue(blocked is not null, "Blocked cargo should keep the recurring operation visible.");
+    AssertEqual(contract.Id, session.Current.SelectedContractId);
+    AssertEqual("paused", blocked!.Status);
+    AssertEqual("blocked cargo", blocked.PausedReason);
+    AssertTrue(!blocked.CanDispatch, "Blocked operation should not dispatch.");
+    AssertTrue(session.Current.AvailableContracts.All(candidate => candidate.Id != contract.Id), "Blocked route cargo should be removed from available contracts.");
+
+    var tick = session.AdvanceTick();
+    AssertTrue(tick.ActiveRouteOperation is not null, "Paused operation should remain visible after a tick.");
+    AssertTrue(tick.Ledger.Any(entry => entry.Tick == tick.Tick
+        && entry.Category == "Logistics"
+        && entry.RelatedId == contract.RouteId
+        && entry.Message.Contains("route operation paused", StringComparison.Ordinal)
+        && entry.Message.Contains("blocked cargo", StringComparison.Ordinal)), "Paused operation should explain blocked cargo in the ledger.");
 }
 
 static void PrototypeRoutePolicyHashIsDeterministic()
@@ -1025,6 +1109,32 @@ static string ContractFingerprint(IEnumerable<PrototypeRouteContractView> contra
             contract.PolicyAction)));
 }
 
+static string RouteOperationFingerprint(IEnumerable<PrototypeRouteOperationView> operations)
+{
+    return string.Join("|", operations.Select(operation =>
+        string.Format(
+            CultureInfo.InvariantCulture,
+            "{0}:{1}:{2}->{3}:{4}:{5}:{6}:{7}:{8}:{9}:{10}:{11:0.00}:{12:0.00}:{13:0.00}:{14}:{15}:{16}:{17}",
+            operation.Id,
+            operation.SourceContractId,
+            operation.FromNode,
+            operation.ToNode,
+            operation.RouteId,
+            operation.ResourceId,
+            operation.IsActive,
+            operation.CanDispatch,
+            operation.CapacityPerDay,
+            operation.ExpectedUnits,
+            operation.ShipmentPriority,
+            operation.ExpectedRevenue,
+            operation.TransportCost,
+            operation.ExpectedNet,
+            operation.UnmetDemandServed,
+            operation.Status,
+            operation.PausedReason,
+            operation.PolicyAction)));
+}
+
 static PrototypeMarketSignal SignalFor(PrototypeSnapshot snapshot, string cityId, string resourceId)
 {
     return snapshot.Cities
@@ -1038,6 +1148,33 @@ static PrototypeRouteContractView FindContract(PrototypeSnapshot snapshot, strin
     var contract = snapshot.AvailableContracts.FirstOrDefault(predicate);
     AssertTrue(contract is not null, $"{failureMessage} Available: {ContractFingerprint(snapshot.AvailableContracts)}");
     return contract!;
+}
+
+static (PrototypeSnapshot Snapshot, PrototypeLedgerEntry Delivery) AdvanceUntilRouteOperationDelivery(
+    PrototypeSession session,
+    string routeId,
+    string resourceId,
+    int maxTicks = 6)
+{
+    for (var i = 0; i < maxTicks; i++)
+    {
+        var previousCash = session.Current.Company.Cash;
+        var tick = session.AdvanceTick();
+        var tickLedger = tick.Ledger.Where(entry => entry.Tick == tick.Tick).ToArray();
+        AssertEqual(tick.Company.Cash - previousCash, tickLedger.Sum(entry => entry.CashDelta));
+
+        var delivery = tickLedger.FirstOrDefault(entry =>
+            entry.Category == "Logistics"
+            && entry.RelatedId == routeId
+            && entry.Message.Contains("route operation delivered", StringComparison.Ordinal)
+            && entry.Message.Contains(resourceId, StringComparison.Ordinal));
+        if (delivery is not null)
+        {
+            return (tick, delivery);
+        }
+    }
+
+    throw new InvalidOperationException($"Expected selected route operation {routeId}:{resourceId} to dispatch within {maxTicks} ticks.");
 }
 
 static string CitySpecializationFingerprint(PrototypeSnapshot snapshot)

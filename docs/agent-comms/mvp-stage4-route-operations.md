@@ -2,8 +2,38 @@
 
 ## Status
 
-Planning pass complete. No gameplay code changed in this pass because route save
-state is active and shared.
+Implemented on `agent/mvp-roadmap-execution` using the minimal save v2 path.
+`PendingRouteContractId` now represents one active recurring charter/route
+operation in the bridge/UI, without a save-version bump.
+
+## Implementation Result
+
+- Added `PrototypeRouteOperationView`, `RouteOperationCandidates`, and
+  `ActiveRouteOperation` as deterministic Godot-free bridge surfaces.
+- Selecting a route contract now starts a recurring route operation. It remains
+  visible while ready or paused, and can be stopped with `ClearRouteOperation`.
+- Active route operations respect route policy reserved cargo, warehouse safety
+  stock, exportable source warehouse stock, current destination demand gap, route
+  dispatch cap, and expected net.
+- If an active operation cannot move cargo, it reports a deterministic pause
+  reason: `blocked cargo`, `no exportable stock`, `destination stocked`, `no
+  route capacity`, or `negative expected net`.
+- The Godot route contract panel now explains the active route operation,
+  used/free capacity, unmet demand served, expected net, and stop control. The
+  route inspector and system probe also expose operation status.
+- No in-transit lead-time queue was added; settlement remains same-tick.
+
+## Verification Result
+
+- `tools/test.ps1`: passed with 43/43 console tests, `INTERACTION_SMOKE PASS`,
+  and `VISUAL_SMOKE PASS`.
+- `tools/benchmark.ps1`: passed with 25/25 playable seeds, average unmet demand
+  ratio 0.7115, median time-to-profit 1.0, bankruptcy 0/25.
+- `tools/visual-qa.ps1`: passed with 15 captures in
+  `artifacts/godot-visual-qa/visual-qa-20260430-162456`.
+- Delegated simulation and integration reviews found no blockers. The one
+  non-blocking dispatch coverage gap was fixed with a deterministic
+  wood-delivery test fixture.
 
 ## Context Read
 
@@ -78,6 +108,10 @@ There are two safe paths:
 - Full route-operations path: add a `RouteOperations` collection to the save
   model, advance the save version, and write an ADR/checkpoint before
   implementation.
+
+Chosen for this implementation: minimal v2. The "one active operation per route"
+target is deferred until save v3/full route operations; the current MVP slice
+supports one active recurring charter globally.
 
 Recommended full save shape:
 

@@ -39,6 +39,8 @@ public partial class BootstrapPanel : Control
     private Label? _contractSummary;
     private OptionButton? _contractOptions;
     private Button? _contractActionButton;
+    private Label? _operationSummary;
+    private Button? _operationStopButton;
     private Label? _routePolicySummary;
     private OptionButton? _routePolicyResourceOptions;
     private Button? _routeReserveButton;
@@ -60,6 +62,7 @@ public partial class BootstrapPanel : Control
     private string? _contractScopeKey;
     private string? _warehousePolicyMessage;
     private string? _routePolicyMessage;
+    private string? _routeOperationMessage;
     private string? _invalidContractId;
     private string? _selectedCityId;
     private string? _selectedRouteId;
@@ -259,6 +262,13 @@ public partial class BootstrapPanel : Control
         _contractActionButton.Pressed += SelectVisibleRouteContract;
         contractStack.AddChild(_contractActionButton);
 
+        _operationSummary = CreateInlineLabel("");
+        contractStack.AddChild(_operationSummary);
+
+        _operationStopButton = CreateButton("Stop Operation");
+        _operationStopButton.Pressed += StopRouteOperation;
+        contractStack.AddChild(_operationStopButton);
+
         contractStack.AddChild(CreateDivider());
         _routePolicySummary = CreateInlineLabel("Select a route or contract to control route policy.");
         contractStack.AddChild(_routePolicySummary);
@@ -434,6 +444,7 @@ public partial class BootstrapPanel : Control
             _invalidContractId = null;
             _warehousePolicyMessage = null;
             _routePolicyMessage = null;
+            _routeOperationMessage = null;
             UpdatePrototypeView();
         }
         catch (Exception ex)
@@ -473,6 +484,7 @@ public partial class BootstrapPanel : Control
 
         UpdateInspector();
         UpdateContractControl();
+        UpdateRouteOperationControl();
         UpdateRoutePolicyControl();
         UpdateWarnings();
         UpdateProductionChains();
@@ -514,6 +526,8 @@ public partial class BootstrapPanel : Control
         _contractSummary = null;
         _contractOptions = null;
         _contractActionButton = null;
+        _operationSummary = null;
+        _operationStopButton = null;
         _routePolicySummary = null;
         _routePolicyResourceOptions = null;
         _routeReserveButton = null;
@@ -533,6 +547,7 @@ public partial class BootstrapPanel : Control
         _contractScopeKey = null;
         _warehousePolicyMessage = null;
         _routePolicyMessage = null;
+        _routeOperationMessage = null;
         _invalidContractId = null;
         _policyFocusCityId = null;
         _refreshingContractControl = false;
@@ -550,6 +565,7 @@ public partial class BootstrapPanel : Control
         _invalidContractId = null;
         _warehousePolicyMessage = null;
         _routePolicyMessage = null;
+        _routeOperationMessage = null;
         UpdatePrototypeView();
     }
 
@@ -562,6 +578,7 @@ public partial class BootstrapPanel : Control
         _invalidContractId = null;
         _warehousePolicyMessage = null;
         _routePolicyMessage = null;
+        _routeOperationMessage = null;
         UpdatePrototypeView();
     }
 
@@ -574,6 +591,7 @@ public partial class BootstrapPanel : Control
         _invalidContractId = null;
         _warehousePolicyMessage = null;
         _routePolicyMessage = null;
+        _routeOperationMessage = null;
         UpdatePrototypeView();
     }
 
@@ -823,13 +841,20 @@ public partial class BootstrapPanel : Control
         var selectedRouteContract = selectedContract is not null && selectedContract.RouteId == route.Id
             ? selectedContract
             : null;
+        var activeOperation = _snapshot.ActiveRouteOperation is not null && _snapshot.ActiveRouteOperation.RouteId == route.Id
+            ? _snapshot.ActiveRouteOperation
+            : null;
 
         _inspector.AppendText($"Route {route.Id}\n");
         _inspector.AppendText($"{from?.Name ?? route.FromNode} -> {to?.Name ?? route.ToNode} | {route.Mode}\n");
         _inspector.AppendText($"Capacity {route.CapacityPerDay}/day | lead time {route.LeadDays} {DayLabel(route.LeadDays)} | cost {route.CostPerUnit:0.00}/unit\n");
         _inspector.AppendText($"Company Ledger cashflow on this route: {FormatSignedMoney(lastCash)}\n");
         _inspector.AppendText($"Market Pressure at endpoints: {routeDemand}\n");
-        if (selectedRouteContract is not null)
+        if (activeOperation is not null)
+        {
+            _inspector.AppendText($"Route Operation active: {OperationBrief(activeOperation)} | capacity {activeOperation.UsedCapacity}/{activeOperation.CapacityPerDay}\n");
+        }
+        else if (selectedRouteContract is not null)
         {
             _inspector.AppendText($"Route Contract selected: {ContractBrief(selectedRouteContract)}\n");
         }
@@ -1377,6 +1402,9 @@ public partial class BootstrapPanel : Control
         _testProbe.AppendText(bestContract is null
             ? "Route Contract: none\n"
             : $"Route Contract: P{bestContract.ShipmentPriority} {ResourceLabel(bestContract.ResourceId)} x{bestContract.Units}, net {FormatSignedMoney(bestContract.ExpectedNet)}\n");
+        _testProbe.AppendText(_snapshot.ActiveRouteOperation is null
+            ? "Route Operation: none active\n"
+            : $"Route Operation: {OperationBrief(_snapshot.ActiveRouteOperation)}, capacity {_snapshot.ActiveRouteOperation.UsedCapacity}/{_snapshot.ActiveRouteOperation.CapacityPerDay}\n");
         _testProbe.AppendText(bestChain is null
             ? "Production Chains: none\n"
             : $"Production Chains: {RecipeLabel(bestChain.RecipeId)} at {bestChain.CityName}, {FormatSignedMoney(bestChain.ExpectedMargin)}, {bestChain.Reason}\n");
@@ -1854,27 +1882,86 @@ public partial class BootstrapPanel : Control
 
     private void SelectVisibleRouteContract()
     {
-        if (_session is null || _contractOptions is null || _visibleContracts.Count == 0)
+        if (_session is null || _snapshot is null || _contractOptions is null || _visibleContracts.Count == 0)
         {
             return;
         }
 
+        var previousHash = _snapshot.SaveHash;
         var index = Math.Clamp(_contractOptions.Selected, 0, _visibleContracts.Count - 1);
         var contractId = _visibleContracts[index].Id;
         if (!_session.SelectRouteContract(contractId))
         {
             _invalidContractId = contractId;
+            _routeOperationMessage = $"Route operation rejected stale contract {contractId}.";
         }
         else
         {
             _invalidContractId = null;
             _pendingContractId = contractId;
+            _routeOperationMessage = $"Started route operation; save {ShortHash(previousHash)} -> {ShortHash(_session.Current.SaveHash)}.";
         }
 
         _snapshot = _session.Current;
 
         KeepValidSelection();
         UpdatePrototypeView();
+    }
+
+    private void StopRouteOperation()
+    {
+        if (_session is null || _snapshot is null)
+        {
+            return;
+        }
+
+        var previousHash = _snapshot.SaveHash;
+        if (!_session.ClearRouteOperation())
+        {
+            _routeOperationMessage = "No active route operation to stop.";
+            UpdateRouteOperationControl();
+            return;
+        }
+
+        _snapshot = _session.Current;
+        _routeOperationMessage = $"Stopped route operation; save {ShortHash(previousHash)} -> {ShortHash(_snapshot.SaveHash)}.";
+        _pendingContractId = null;
+        KeepValidSelection();
+        UpdatePrototypeView();
+    }
+
+    private void UpdateRouteOperationControl()
+    {
+        if (_snapshot is null || _operationSummary is null || _operationStopButton is null)
+        {
+            return;
+        }
+
+        var active = _snapshot.ActiveRouteOperation;
+        var lines = new List<string>();
+        if (_routeOperationMessage is not null)
+        {
+            lines.Add(_routeOperationMessage);
+        }
+
+        if (active is null)
+        {
+            var candidate = _snapshot.RouteOperationCandidates.FirstOrDefault(OperationAppliesToCurrentSelection);
+            lines.Add(candidate is null
+                ? "Route Operation: none active. Select a contract to start a recurring charter."
+                : $"Route Operation candidate: {OperationSummary(candidate)}.");
+            _operationStopButton.Disabled = true;
+            _operationStopButton.Text = "No Operation";
+        }
+        else
+        {
+            var scope = OperationAppliesToCurrentSelection(active) ? "Active route operation" : "Active route operation elsewhere";
+            lines.Add($"{scope}: {OperationSummary(active)}.");
+            _operationStopButton.Disabled = false;
+            _operationStopButton.Text = "Stop Operation";
+        }
+
+        _operationSummary.Text = string.Join("\n", lines);
     }
 
     private void UpdateRoutePolicyControl()
@@ -1955,6 +2042,10 @@ public partial class BootstrapPanel : Control
                 .Select(signal => signal.ResourceId))
             .Concat(_snapshot.RoutePolicies.SelectMany(policy => policy.ReservedResources))
             .Concat(_snapshot.AvailableContracts.Where(contract => contract.RouteId == routePolicy.RouteId).Select(contract => contract.ResourceId))
+            .Concat(_snapshot.RouteOperationCandidates.Where(operation => operation.RouteId == routePolicy.RouteId).Select(operation => operation.ResourceId))
+            .Concat(_snapshot.ActiveRouteOperation is not null && _snapshot.ActiveRouteOperation.RouteId == routePolicy.RouteId
+                ? [_snapshot.ActiveRouteOperation.ResourceId]
+                : [])
             .Concat(routePolicy.PriorityResourceId is null ? [] : [routePolicy.PriorityResourceId])
             .Distinct(StringComparer.Ordinal)
             .Order(StringComparer.Ordinal);
@@ -2073,6 +2164,22 @@ public partial class BootstrapPanel : Control
         return true;
     }
 
+    private bool OperationAppliesToCurrentSelection(PrototypeRouteOperationView operation)
+    {
+        if (_selectedRouteId is not null)
+        {
+            return string.Equals(operation.RouteId, _selectedRouteId, StringComparison.Ordinal);
+        }
+
+        if (_selectedCityId is not null)
+        {
+            return string.Equals(operation.FromNode, _selectedCityId, StringComparison.Ordinal)
+                || string.Equals(operation.ToNode, _selectedCityId, StringComparison.Ordinal);
+        }
+
+        return true;
+    }
+
     private string ContractScopeKey()
     {
         if (_selectedRouteId is not null)
@@ -2141,6 +2248,19 @@ public partial class BootstrapPanel : Control
         return $"P{contract.ShipmentPriority} {ResourceLabel(contract.ResourceId)} x{contract.Units} {CityName(contract.FromNode)} -> {CityName(contract.ToNode)} on {contract.RouteId} ({FormatSignedMoney(contract.ExpectedNet)} net)";
     }
 
+    private string OperationSummary(PrototypeRouteOperationView operation)
+    {
+        var pause = operation.CanDispatch
+            ? "ready"
+            : $"paused: {operation.PausedReason}";
+        return $"{ResourceLabel(operation.ResourceId)} x{operation.ExpectedUnits} {CityName(operation.FromNode)} -> {CityName(operation.ToNode)} on {RouteDisplayName(operation.RouteId)}; {pause}, capacity {operation.UsedCapacity}/{operation.CapacityPerDay} used, {operation.FreeCapacity} free, unmet served {operation.UnmetDemandServed}, net {FormatSignedMoney(operation.ExpectedNet)}";
+    }
+
+    private string OperationBrief(PrototypeRouteOperationView operation)
+    {
+        return $"{operation.Status} {ResourceLabel(operation.ResourceId)} x{operation.ExpectedUnits} {CityName(operation.FromNode)} -> {CityName(operation.ToNode)} ({FormatSignedMoney(operation.ExpectedNet)} net)";
+    }
+
     private PrototypeRouteContractView? SelectedContract()
     {
         if (_snapshot?.SelectedContractId is null)
@@ -2181,6 +2301,11 @@ public partial class BootstrapPanel : Control
         if (selectedContract is not null)
         {
             return selectedContract.RouteId;
+        }
+
+        if (_snapshot?.ActiveRouteOperation is not null)
+        {
+            return _snapshot.ActiveRouteOperation.RouteId;
         }
 
         return _snapshot?.AvailableContracts.FirstOrDefault()?.RouteId;
