@@ -32,6 +32,12 @@ public sealed record EventSaveState(string Id, string State, int DaysRemaining);
 
 public sealed record FogOfWarState(IReadOnlyList<string> DiscoveredNodes);
 
+public sealed record WarehousePolicySaveState(
+    string CityId,
+    string ResourceId,
+    int SafetyStock,
+    int ReorderPoint);
+
 public sealed record SaveGame(
     int SaveVersion,
     string ContentHash,
@@ -44,11 +50,12 @@ public sealed record SaveGame(
     IReadOnlyList<RouteSaveState> Routes,
     IReadOnlyList<EventSaveState> Events,
     FogOfWarState FogOfWar,
+    IReadOnlyList<WarehousePolicySaveState> WarehousePolicies,
     string? PendingRouteContractId);
 
 public static class SaveCodec
 {
-    public const int CurrentSaveVersion = 1;
+    public const int CurrentSaveVersion = 2;
 
     private static readonly JsonSerializerOptions Options = new()
     {
@@ -86,6 +93,10 @@ public static class SaveCodec
             Cities = save.Cities.OrderBy(city => city.Id, StringComparer.Ordinal).ToArray(),
             Routes = save.Routes.OrderBy(route => route.Id, StringComparer.Ordinal).ToArray(),
             Events = save.Events.OrderBy(evt => evt.Id, StringComparer.Ordinal).ToArray(),
+            WarehousePolicies = save.WarehousePolicies
+                .OrderBy(policy => policy.CityId, StringComparer.Ordinal)
+                .ThenBy(policy => policy.ResourceId, StringComparer.Ordinal)
+                .ToArray(),
             FogOfWar = save.FogOfWar with
             {
                 DiscoveredNodes = save.FogOfWar.DiscoveredNodes.Order(StringComparer.Ordinal).ToArray()
@@ -106,9 +117,9 @@ public static class SaveValidator
     {
         var errors = new List<string>();
 
-        if (save.SaveVersion <= 0)
+        if (save.SaveVersion != SaveCodec.CurrentSaveVersion)
         {
-            errors.Add("saveVersion must be positive");
+            errors.Add($"saveVersion must be {SaveCodec.CurrentSaveVersion}");
         }
 
         if (string.IsNullOrWhiteSpace(save.ContentHash))
@@ -146,6 +157,48 @@ public static class SaveValidator
             if (route.CapacityPerDay <= 0)
             {
                 errors.Add($"route '{route.Id}' capacityPerDay must be positive");
+            }
+        }
+
+        if (save.WarehousePolicies is null)
+        {
+            errors.Add("warehousePolicies must not be null");
+        }
+        else
+        {
+            var seenPolicies = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var policy in save.WarehousePolicies)
+            {
+                var policyKey = $"{policy.CityId}:{policy.ResourceId}";
+                if (!seenPolicies.Add(policyKey))
+                {
+                    errors.Add($"warehouse policy '{policyKey}' must not be duplicated");
+                }
+
+                if (string.IsNullOrWhiteSpace(policy.CityId))
+                {
+                    errors.Add("warehouse policy cityId must not be empty");
+                }
+
+                if (string.IsNullOrWhiteSpace(policy.ResourceId))
+                {
+                    errors.Add("warehouse policy resourceId must not be empty");
+                }
+
+                if (policy.SafetyStock < 0)
+                {
+                    errors.Add($"warehouse policy '{policy.CityId}:{policy.ResourceId}' safetyStock must not be negative");
+                }
+
+                if (policy.ReorderPoint < 0)
+                {
+                    errors.Add($"warehouse policy '{policy.CityId}:{policy.ResourceId}' reorderPoint must not be negative");
+                }
+
+                if (policy.ReorderPoint < policy.SafetyStock)
+                {
+                    errors.Add($"warehouse policy '{policy.CityId}:{policy.ResourceId}' reorderPoint must not be below safetyStock");
+                }
             }
         }
 

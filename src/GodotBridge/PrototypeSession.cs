@@ -30,6 +30,7 @@ public sealed record PrototypeMarketSignal(
     int ConsumptionPerTick,
     int SafetyStock,
     int ReorderPoint,
+    bool IsPolicyOverridden,
     int ShipmentPriority,
     string Reason,
     string PolicyAction);
@@ -86,11 +87,15 @@ public sealed class PrototypeSession
     private readonly CityGrowthSystem _cityGrowth = new();
     private readonly List<RuntimeCity> _cities;
     private readonly List<PrototypeLedgerEntry> _ledger = [];
+    private readonly Dictionary<WarehousePolicyKey, WarehousePolicyOverride> _warehousePolicyOverrides = [];
 
     private CompanyState _company = new(1000m, 0m, 50, "merchant_league");
     private CalendarState _calendar = new(1, 1);
     private OpportunityScore _aiChoice = new("none", 0m);
     private string? _selectedContractId;
+
+    private const int MinPolicyStock = 0;
+    private const int MaxPolicyStock = 64;
 
     public PrototypeSession(GeneratedWorld world, GameContent content, IReadOnlyList<TradeRoute> routes)
     {
@@ -122,6 +127,22 @@ public sealed class PrototypeSession
         }
 
         _selectedContractId = contractId;
+        Current = BuildSnapshot(Current.Tick);
+        return true;
+    }
+
+    public bool SetWarehousePolicy(string cityId, string resourceId, int safetyStock, int reorderPoint)
+    {
+        if (!IsKnownPolicyTarget(cityId, resourceId))
+        {
+            return false;
+        }
+
+        var clampedSafetyStock = Math.Clamp(safetyStock, MinPolicyStock, MaxPolicyStock);
+        var clampedReorderPoint = Math.Clamp(reorderPoint, MinPolicyStock, MaxPolicyStock);
+        clampedReorderPoint = Math.Max(clampedReorderPoint, clampedSafetyStock);
+
+        _warehousePolicyOverrides[new WarehousePolicyKey(cityId, resourceId)] = new WarehousePolicyOverride(clampedSafetyStock, clampedReorderPoint);
         Current = BuildSnapshot(Current.Tick);
         return true;
     }
@@ -473,9 +494,8 @@ public sealed class PrototypeSession
             prices.TryGetValue(resource.Id, out var price);
             var desiredStock = Math.Max(0, need?.DesiredStock ?? 0);
             var consumption = Math.Max(0, need?.ConsumptionPerTick ?? 0);
-            var safetyStock = SafetyStockFor(need);
-            var reorderPoint = ReorderPointFor(need);
-            var shipmentPriority = ShipmentPriority(marketStock, desiredStock, safetyStock, reorderPoint);
+            var policy = EffectivePolicyFor(city, resource.Id, need);
+            var shipmentPriority = ShipmentPriority(marketStock, desiredStock, policy.SafetyStock, policy.ReorderPoint);
             signals.Add(new PrototypeMarketSignal(
                 resource.Id,
                 price?.Price ?? resource.BasePrice,
@@ -484,10 +504,11 @@ public sealed class PrototypeSession
                 warehouseStock,
                 desiredStock,
                 consumption,
-                safetyStock,
-                reorderPoint,
+                policy.SafetyStock,
+                policy.ReorderPoint,
+                policy.IsOverride,
                 shipmentPriority,
-                MarketReason(marketStock, warehouseStock, desiredStock, consumption, price?.Scarcity ?? 0, safetyStock, reorderPoint),
+                MarketReason(marketStock, warehouseStock, desiredStock, consumption, price?.Scarcity ?? 0, policy.SafetyStock, policy.ReorderPoint),
                 PolicyAction(shipmentPriority, desiredStock, marketStock, consumption)));
         }
 
@@ -556,6 +577,11 @@ public sealed class PrototypeSession
             Routes.Select(route => new RouteSaveState(route.Id, route.FromNode, route.ToNode, route.Mode, route.CapacityPerDay, ["food", "fuel", "construction"])).ToArray(),
             [],
             new FogOfWarState(_cities.Take(4).Select(city => city.Id).ToArray()),
+            _warehousePolicyOverrides
+                .OrderBy(kvp => kvp.Key.CityId, StringComparer.Ordinal)
+                .ThenBy(kvp => kvp.Key.ResourceId, StringComparer.Ordinal)
+                .Select(kvp => new WarehousePolicySaveState(kvp.Key.CityId, kvp.Key.ResourceId, kvp.Value.SafetyStock, kvp.Value.ReorderPoint))
+                .ToArray(),
             selectedContractId);
     }
 
@@ -606,11 +632,12 @@ public sealed class PrototypeSession
     private int ShipmentPriority(RuntimeCity city, string resourceId)
     {
         var need = NeedFor(resourceId);
+        var policy = EffectivePolicyFor(city, resourceId, need);
         return ShipmentPriority(
             city.Market.Get(resourceId),
             Math.Max(0, need?.DesiredStock ?? 0),
-            SafetyStockFor(need),
-            ReorderPointFor(need));
+            policy.SafetyStock,
+            policy.ReorderPoint);
     }
 
     private string PolicyAction(RuntimeCity city, string resourceId)
@@ -632,12 +659,30 @@ public sealed class PrototypeSession
             return 0;
         }
 
-        return Math.Min(city.CompanyWarehouse.Get(resourceId), SafetyStockFor(need));
+        return Math.Min(city.CompanyWarehouse.Get(resourceId), EffectivePolicyFor(city, resourceId, need).SafetyStock);
     }
 
     private MarketNeed? NeedFor(string resourceId)
     {
         return _needs.FirstOrDefault(need => string.Equals(need.ResourceId, resourceId, StringComparison.Ordinal));
+    }
+
+    private bool IsKnownPolicyTarget(string cityId, string resourceId)
+    {
+        return !string.IsNullOrWhiteSpace(cityId)
+            && !string.IsNullOrWhiteSpace(resourceId)
+            && _cities.Any(city => string.Equals(city.Id, cityId, StringComparison.Ordinal))
+            && _needs.Any(need => string.Equals(need.ResourceId, resourceId, StringComparison.Ordinal));
+    }
+
+    private WarehousePolicy EffectivePolicyFor(RuntimeCity city, string resourceId, MarketNeed? need)
+    {
+        if (_warehousePolicyOverrides.TryGetValue(new WarehousePolicyKey(city.Id, resourceId), out var policy))
+        {
+            return new WarehousePolicy(policy.SafetyStock, policy.ReorderPoint, true);
+        }
+
+        return new WarehousePolicy(SafetyStockFor(need), ReorderPointFor(need), false);
     }
 
     private static int ContractUnits(TradeRoute route)
@@ -833,4 +878,10 @@ public sealed class PrototypeSession
     }
 
     private sealed record ProductionReservation(string CityId, string ResourceId, int Amount);
+
+    private sealed record WarehousePolicyKey(string CityId, string ResourceId);
+
+    private sealed record WarehousePolicyOverride(int SafetyStock, int ReorderPoint);
+
+    private sealed record WarehousePolicy(int SafetyStock, int ReorderPoint, bool IsOverride);
 }

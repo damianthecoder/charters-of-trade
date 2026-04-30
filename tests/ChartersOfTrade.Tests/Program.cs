@@ -29,9 +29,14 @@ var tests = new (string Name, Action Run)[]
     ("economy prices respond to stock pressure", EconomyPricesRespondToStockPressure),
     ("prototype exposes local market pressure signals", PrototypeExposesLocalMarketPressureSignals),
     ("prototype warehouse policies expose safety stock", PrototypeWarehousePoliciesExposeSafetyStock),
+    ("prototype warehouse policy overrides are deterministic", PrototypeWarehousePolicyOverridesAreDeterministic),
+    ("prototype warehouse policy changes save hash", PrototypeWarehousePolicyChangesSaveHash),
+    ("prototype warehouse policy clamps and rejects invalid targets", PrototypeWarehousePolicyClampsAndRejectsInvalidTargets),
+    ("prototype warehouse policy affects contract priority and availability", PrototypeWarehousePolicyAffectsContractPriorityAndAvailability),
     ("prototype route contracts follow shipment priority", PrototypeRouteContractsFollowShipmentPriority),
     ("economy production never creates negative stock", EconomyProductionNeverCreatesNegativeStock),
     ("save-load-save preserves hash", SaveLoadSavePreservesHash),
+    ("warehouse policy save-load preserves hash", WarehousePolicySaveLoadPreservesHash),
     ("save load rejects negative stock", SaveLoadRejectsNegativeStock),
     ("AI chooses the highest utility opportunity", AiChoosesHighestUtilityOpportunity)
 };
@@ -241,8 +246,92 @@ static void PrototypeWarehousePoliciesExposeSafetyStock()
 
     AssertTrue(trackedSignals.All(signal => signal.SafetyStock > 0), "Tracked needs should expose positive safety stock.");
     AssertTrue(trackedSignals.All(signal => signal.ReorderPoint >= signal.SafetyStock), "Reorder points should not sit below safety stock.");
+    AssertTrue(trackedSignals.All(signal => !signal.IsPolicyOverridden), "Default policy signals should not be marked as overridden.");
     AssertTrue(trackedSignals.Any(signal => signal.ShipmentPriority > 0), "Expected at least one market signal to request shipment priority.");
     AssertTrue(trackedSignals.Any(signal => signal.PolicyAction.Contains("reorder", StringComparison.Ordinal) || signal.PolicyAction.Contains("shipment", StringComparison.Ordinal) || signal.PolicyAction.Contains("top up", StringComparison.Ordinal)), "Expected policy actions to explain shipment decisions.");
+}
+
+static void PrototypeWarehousePolicyOverridesAreDeterministic()
+{
+    var bridge = new SimulationBridge();
+    var first = bridge.CreatePrototypeSession(20260429);
+    var second = bridge.CreatePrototypeSession(20260429);
+    var target = first.Current.Cities[0].MarketSignals.First(signal => signal.DesiredStock > 0);
+    var cityId = first.Current.Cities[0].Id;
+
+    AssertTrue(first.SetWarehousePolicy(cityId, target.ResourceId, 9, 17), "Expected first policy override to succeed.");
+    AssertTrue(second.SetWarehousePolicy(cityId, target.ResourceId, 9, 17), "Expected second policy override to succeed.");
+
+    for (var i = 0; i < 4; i++)
+    {
+        first.AdvanceTick();
+        second.AdvanceTick();
+    }
+
+    AssertEqual(first.Current.SaveHash, second.Current.SaveHash);
+    AssertEqual(PolicyFingerprint(first.Current), PolicyFingerprint(second.Current));
+    AssertEqual(ContractFingerprint(first.Current.AvailableContracts), ContractFingerprint(second.Current.AvailableContracts));
+}
+
+static void PrototypeWarehousePolicyChangesSaveHash()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(424242);
+    var city = session.Current.Cities[0];
+    var signal = city.MarketSignals.First(item => item.DesiredStock > 0);
+    var initialHash = session.Current.SaveHash;
+
+    AssertTrue(session.SetWarehousePolicy(city.Id, signal.ResourceId, signal.SafetyStock + 1, signal.ReorderPoint + 2), "Expected policy override to succeed.");
+    AssertEqual(0, session.Current.Tick);
+    AssertTrue(session.Current.SaveHash != initialHash, "Policy overrides should affect the state hash immediately.");
+
+    var updated = SignalFor(session.Current, city.Id, signal.ResourceId);
+    AssertTrue(updated.IsPolicyOverridden, "Market signal should expose that the policy is overridden.");
+    AssertEqual(signal.SafetyStock + 1, updated.SafetyStock);
+    AssertEqual(signal.ReorderPoint + 2, updated.ReorderPoint);
+}
+
+static void PrototypeWarehousePolicyClampsAndRejectsInvalidTargets()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(424242);
+    var city = session.Current.Cities[0];
+    var signal = city.MarketSignals.First(item => item.DesiredStock > 0);
+    var initialHash = session.Current.SaveHash;
+    var initialTick = session.Current.Tick;
+
+    AssertTrue(!session.SetWarehousePolicy("missing-city", signal.ResourceId, 2, 4), "Expected unknown city id to be rejected.");
+    AssertTrue(!session.SetWarehousePolicy(city.Id, "missing-resource", 2, 4), "Expected unknown resource id to be rejected.");
+    AssertTrue(!session.SetWarehousePolicy(city.Id, "wool", 2, 4), "Expected resources without market needs to be rejected as policy targets.");
+    AssertEqual(initialTick, session.Current.Tick);
+    AssertEqual(initialHash, session.Current.SaveHash);
+
+    AssertTrue(session.SetWarehousePolicy(city.Id, signal.ResourceId, 999, 1), "Expected valid policy target to accept clamped values.");
+    var updated = SignalFor(session.Current, city.Id, signal.ResourceId);
+    AssertEqual(64, updated.SafetyStock);
+    AssertEqual(64, updated.ReorderPoint);
+    AssertTrue(updated.IsPolicyOverridden, "Expected clamped policy to be marked as overridden.");
+}
+
+static void PrototypeWarehousePolicyAffectsContractPriorityAndAvailability()
+{
+    var prioritySession = new SimulationBridge().CreatePrototypeSession(424242);
+    var priorityCandidate = FindContract(prioritySession.Current, "Expected a contract whose destination priority can be raised by policy.", contract =>
+    {
+        var signal = SignalFor(prioritySession.Current, contract.ToNode, contract.ResourceId);
+        return signal.MarketStock > 0 && signal.ShipmentPriority < 3;
+    });
+    var oldPriority = priorityCandidate.ShipmentPriority;
+
+    AssertTrue(prioritySession.SetWarehousePolicy(priorityCandidate.ToNode, priorityCandidate.ResourceId, 64, 64), "Expected destination policy override to succeed.");
+    var reprioritized = prioritySession.Current.AvailableContracts.Single(contract => contract.Id == priorityCandidate.Id);
+    AssertTrue(reprioritized.ShipmentPriority > oldPriority, "Destination policy override should raise route contract shipment priority.");
+    AssertTrue(SignalFor(prioritySession.Current, priorityCandidate.ToNode, priorityCandidate.ResourceId).IsPolicyOverridden, "Destination signal should show the override.");
+
+    var availabilitySession = new SimulationBridge().CreatePrototypeSession(424242);
+    var availabilityCandidate = FindContract(availabilitySession.Current, "Expected a contract that can be removed by protecting source warehouse stock.", _ => true);
+    AssertTrue(availabilitySession.SetWarehousePolicy(availabilityCandidate.FromNode, availabilityCandidate.ResourceId, 64, 64), "Expected source policy override to succeed.");
+    AssertTrue(
+        availabilitySession.Current.AvailableContracts.All(contract => contract.Id != availabilityCandidate.Id),
+        "Source safety stock override should reserve warehouse stock and remove that contract from availability.");
 }
 
 static void PrototypeRouteContractsFollowShipmentPriority()
@@ -442,6 +531,39 @@ static void SaveLoadSavePreservesHash()
     AssertEqual(firstHash, secondHash);
 }
 
+static void WarehousePolicySaveLoadPreservesHash()
+{
+    var content = GameContentLoader.LoadFromDirectory(ContentPathResolver.FindContentDirectory());
+    var snapshot = new SimulationBridge().CreateNewGame(424242);
+    var routes = RoutePlanner.FromWorld(snapshot.World);
+    var market = StarterScenarioFactory.CreateInitialMarket(content.Resources);
+    var prices = new EconomyTick().CalculatePrices(content.Resources, market, StarterScenarioFactory.CreateNeeds(content.Resources));
+    var save = StarterSaveFactory.Create(424242, snapshot.World.WorldGenVersion, content.ContentHash, snapshot.World.Nodes, routes, market, prices) with
+    {
+        WarehousePolicies =
+        [
+            new WarehousePolicySaveState(snapshot.World.Nodes[0].Id, "grain", 5, 12)
+        ]
+    };
+    var firstHash = SaveCodec.ComputeStateHash(save);
+    var json = SaveCodec.Serialize(save);
+    var loaded = SaveCodec.Deserialize(json);
+    var secondHash = SaveCodec.ComputeStateHash(loaded);
+
+    AssertEqual(firstHash, secondHash);
+    AssertTrue(firstHash != SaveCodec.ComputeStateHash(save with { WarehousePolicies = [] }), "Warehouse policy saves should affect state hash.");
+
+    try
+    {
+        SaveCodec.ComputeStateHash(save with { SaveVersion = 1 });
+        throw new InvalidOperationException("Expected save validation to reject an old save version without migration.");
+    }
+    catch (SaveValidationException ex)
+    {
+        AssertTrue(ex.Errors.Any(error => error.Contains("saveVersion", StringComparison.Ordinal)), "Expected save version validation error.");
+    }
+}
+
 static void SaveLoadRejectsNegativeStock()
 {
     var content = GameContentLoader.LoadFromDirectory(ContentPathResolver.FindContentDirectory());
@@ -547,4 +669,35 @@ static string ContractFingerprint(IEnumerable<PrototypeRouteContractView> contra
             contract.Units,
             contract.ShipmentPriority,
             contract.PolicyAction)));
+}
+
+static PrototypeMarketSignal SignalFor(PrototypeSnapshot snapshot, string cityId, string resourceId)
+{
+    return snapshot.Cities
+        .Single(city => city.Id == cityId)
+        .MarketSignals
+        .Single(signal => signal.ResourceId == resourceId);
+}
+
+static PrototypeRouteContractView FindContract(PrototypeSnapshot snapshot, string failureMessage, Func<PrototypeRouteContractView, bool> predicate)
+{
+    var contract = snapshot.AvailableContracts.FirstOrDefault(predicate);
+    AssertTrue(contract is not null, $"{failureMessage} Available: {ContractFingerprint(snapshot.AvailableContracts)}");
+    return contract!;
+}
+
+static string PolicyFingerprint(PrototypeSnapshot snapshot)
+{
+    return string.Join("|", snapshot.Cities
+        .OrderBy(city => city.Id, StringComparer.Ordinal)
+        .SelectMany(city => city.MarketSignals.Select(signal =>
+            string.Format(
+                CultureInfo.InvariantCulture,
+                "{0}:{1}:{2}:{3}:{4}:{5}",
+                city.Id,
+                signal.ResourceId,
+                signal.SafetyStock,
+                signal.ReorderPoint,
+                signal.IsPolicyOverridden,
+                signal.ShipmentPriority))));
 }

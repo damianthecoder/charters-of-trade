@@ -30,14 +30,22 @@ public partial class BootstrapPanel : Control
     private Label? _contractSummary;
     private OptionButton? _contractOptions;
     private Button? _contractActionButton;
+    private Label? _warehousePolicySummary;
+    private OptionButton? _warehouseResourceOptions;
+    private SpinBox? _warehouseSafetyInput;
+    private SpinBox? _warehouseReorderInput;
+    private Button? _warehouseApplyButton;
     private IReadOnlyList<PrototypeRouteContractView> _visibleContracts = [];
+    private IReadOnlyList<PrototypeMarketSignal> _visibleWarehousePolicies = [];
     private PrototypeMapMode _mapMode = PrototypeMapMode.Routes;
     private string? _pendingContractId;
     private string? _contractScopeKey;
+    private string? _warehousePolicyMessage;
     private string? _invalidContractId;
     private string? _selectedCityId;
     private string? _selectedRouteId;
     private bool _refreshingContractControl;
+    private bool _refreshingWarehousePolicyControl;
 
     private sealed record LayoutProfile(
         int OuterMargin,
@@ -233,9 +241,41 @@ public partial class BootstrapPanel : Control
         _warnings.CustomMinimumSize = new Vector2(0, layout.WarningHeight);
         sidebar.AddChild(CreateSectionPanel("Market Pressure", _warnings));
 
+        var warehousePolicyStack = CreateSectionStack();
+        warehousePolicyStack.AddChild(CreateSectionHint("Controls how much company stock this city protects before routes or contracts can export it."));
+        _warehousePolicySummary = CreateInlineLabel("Select a city to control warehouse policy.");
+        warehousePolicyStack.AddChild(_warehousePolicySummary);
+
+        _warehouseResourceOptions = new OptionButton
+        {
+            Name = "WarehouseResourceOptions",
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 30)
+        };
+        _warehouseResourceOptions.ItemSelected += OnWarehouseResourceSelected;
+        warehousePolicyStack.AddChild(_warehouseResourceOptions);
+
+        var warehousePolicyGrid = new GridContainer
+        {
+            Columns = 2,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill
+        };
+        warehousePolicyStack.AddChild(warehousePolicyGrid);
+        warehousePolicyGrid.AddChild(CreateMetricLabel("Safety", new Color(0.62f, 0.69f, 0.69f, 1.0f), HorizontalAlignment.Left));
+        _warehouseSafetyInput = CreatePolicySpinBox("WarehouseSafetyInput");
+        warehousePolicyGrid.AddChild(_warehouseSafetyInput);
+        warehousePolicyGrid.AddChild(CreateMetricLabel("Reorder", new Color(0.62f, 0.69f, 0.69f, 1.0f), HorizontalAlignment.Left));
+        _warehouseReorderInput = CreatePolicySpinBox("WarehouseReorderInput");
+        warehousePolicyGrid.AddChild(_warehouseReorderInput);
+
+        _warehouseApplyButton = CreateButton("Apply Warehouse Policy");
+        _warehouseApplyButton.Pressed += ApplyWarehousePolicy;
+        warehousePolicyStack.AddChild(_warehouseApplyButton);
+
         _policy = CreateLog();
         _policy.CustomMinimumSize = new Vector2(0, layout.PolicyHeight);
-        sidebar.AddChild(CreateSectionPanel("Warehouse Policy", _policy));
+        warehousePolicyStack.AddChild(_policy);
+        sidebar.AddChild(CreateSectionPanel("Warehouse Policy", warehousePolicyStack));
 
         _cities = CreateLog();
         _cities.CustomMinimumSize = new Vector2(0, layout.CitiesHeight);
@@ -314,6 +354,7 @@ public partial class BootstrapPanel : Control
             _selectedRouteId = null;
             _pendingContractId = null;
             _invalidContractId = null;
+            _warehousePolicyMessage = null;
             UpdatePrototypeView();
         }
         catch (Exception ex)
@@ -354,6 +395,7 @@ public partial class BootstrapPanel : Control
         UpdateInspector();
         UpdateContractControl();
         UpdateWarnings();
+        UpdateWarehousePolicyControl();
         UpdatePolicyPanel();
         UpdateTestProbe();
 
@@ -388,11 +430,19 @@ public partial class BootstrapPanel : Control
         _contractSummary = null;
         _contractOptions = null;
         _contractActionButton = null;
+        _warehousePolicySummary = null;
+        _warehouseResourceOptions = null;
+        _warehouseSafetyInput = null;
+        _warehouseReorderInput = null;
+        _warehouseApplyButton = null;
         _visibleContracts = [];
+        _visibleWarehousePolicies = [];
         _pendingContractId = null;
         _contractScopeKey = null;
+        _warehousePolicyMessage = null;
         _invalidContractId = null;
         _refreshingContractControl = false;
+        _refreshingWarehousePolicyControl = false;
     }
 
     private void SelectCity(string cityId)
@@ -401,6 +451,7 @@ public partial class BootstrapPanel : Control
         _selectedRouteId = null;
         _pendingContractId = null;
         _invalidContractId = null;
+        _warehousePolicyMessage = null;
         UpdatePrototypeView();
     }
 
@@ -410,6 +461,7 @@ public partial class BootstrapPanel : Control
         _selectedCityId = null;
         _pendingContractId = null;
         _invalidContractId = null;
+        _warehousePolicyMessage = null;
         UpdatePrototypeView();
     }
 
@@ -419,6 +471,7 @@ public partial class BootstrapPanel : Control
         _selectedRouteId = null;
         _pendingContractId = null;
         _invalidContractId = null;
+        _warehousePolicyMessage = null;
         UpdatePrototypeView();
     }
 
@@ -544,6 +597,7 @@ public partial class BootstrapPanel : Control
         _inspector.AppendText(pricePressure.Length > 0
             ? $"Warehouse Policy: {string.Join(", ", pricePressure)}\n"
             : "Local market pressure: no tracked needs\n");
+        _inspector.AppendText("Policy controls reserve warehouse stock before route contracts and exports use it.\n");
 
         if (recentLedger.Length > 0)
         {
@@ -669,6 +723,182 @@ public partial class BootstrapPanel : Control
         }
     }
 
+    private void UpdateWarehousePolicyControl()
+    {
+        if (_snapshot is null
+            || _warehousePolicySummary is null
+            || _warehouseResourceOptions is null
+            || _warehouseSafetyInput is null
+            || _warehouseReorderInput is null
+            || _warehouseApplyButton is null)
+        {
+            return;
+        }
+
+        var previousResourceId = SelectedWarehousePolicySignal()?.ResourceId;
+        var selectedCity = SelectedWarehousePolicyCity();
+        _visibleWarehousePolicies = selectedCity?.MarketSignals
+            .Where(signal => signal.DesiredStock > 0)
+            .OrderByDescending(signal => signal.ShipmentPriority)
+            .ThenByDescending(signal => signal.Scarcity)
+            .ThenBy(signal => signal.ResourceId, StringComparer.Ordinal)
+            .ToArray() ?? [];
+
+        _refreshingWarehousePolicyControl = true;
+        _warehouseResourceOptions.Clear();
+
+        if (selectedCity is null)
+        {
+            _warehousePolicySummary.Text = "Select a city to control warehouse policy.";
+            _warehouseResourceOptions.AddItem("No city selected");
+            SetWarehousePolicyControlsEnabled(false);
+            _refreshingWarehousePolicyControl = false;
+            return;
+        }
+
+        if (_visibleWarehousePolicies.Count == 0)
+        {
+            _warehousePolicySummary.Text = $"{selectedCity.Name}: no tracked market needs.";
+            _warehouseResourceOptions.AddItem("No tracked resources");
+            SetWarehousePolicyControlsEnabled(false);
+            _refreshingWarehousePolicyControl = false;
+            return;
+        }
+
+        var selectedIndex = 0;
+        for (var i = 0; i < _visibleWarehousePolicies.Count; i++)
+        {
+            var signal = _visibleWarehousePolicies[i];
+            var source = signal.IsPolicyOverridden ? "manual" : "default";
+            _warehouseResourceOptions.AddItem($"{ResourceLabel(signal.ResourceId)} | safety {signal.SafetyStock}, reorder {signal.ReorderPoint} ({source})", i);
+            if (string.Equals(signal.ResourceId, previousResourceId, StringComparison.Ordinal))
+            {
+                selectedIndex = i;
+            }
+        }
+
+        _warehouseResourceOptions.Select(selectedIndex);
+        SetWarehousePolicyControlsEnabled(true);
+        _refreshingWarehousePolicyControl = false;
+        RefreshWarehousePolicyInputs();
+    }
+
+    private void OnWarehouseResourceSelected(long _)
+    {
+        if (_refreshingWarehousePolicyControl)
+        {
+            return;
+        }
+
+        RefreshWarehousePolicyInputs();
+        UpdatePolicyPanel();
+    }
+
+    private void RefreshWarehousePolicyInputs()
+    {
+        if (_warehousePolicySummary is null || _warehouseSafetyInput is null || _warehouseReorderInput is null)
+        {
+            return;
+        }
+
+        var city = SelectedWarehousePolicyCity();
+        var signal = SelectedWarehousePolicySignal();
+        if (city is null || signal is null)
+        {
+            return;
+        }
+
+        _warehouseSafetyInput.Value = signal.SafetyStock;
+        _warehouseReorderInput.Value = signal.ReorderPoint;
+        var source = signal.IsPolicyOverridden ? "manual policy" : "default policy";
+        var exportable = Math.Max(0, signal.WarehouseStock - signal.SafetyStock);
+        _warehousePolicySummary.Text = $"{city.Name}: {ResourceLabel(signal.ResourceId)} uses {source}; reserved {signal.SafetyStock}, exportable {exportable}.";
+    }
+
+    private void ApplyWarehousePolicy()
+    {
+        if (_session is null
+            || _snapshot is null
+            || _warehouseSafetyInput is null
+            || _warehouseReorderInput is null)
+        {
+            return;
+        }
+
+        var city = SelectedWarehousePolicyCity();
+        var signal = SelectedWarehousePolicySignal();
+        if (city is null || signal is null)
+        {
+            _warehousePolicyMessage = "Select a city and resource before applying warehouse policy.";
+            UpdatePolicyPanel();
+            return;
+        }
+
+        var previousHash = _snapshot.SaveHash;
+        var safetyStock = (int)_warehouseSafetyInput.Value;
+        var reorderPoint = (int)_warehouseReorderInput.Value;
+        if (!_session.SetWarehousePolicy(city.Id, signal.ResourceId, safetyStock, reorderPoint))
+        {
+            _warehousePolicyMessage = $"Warehouse policy rejected for {city.Name} {ResourceLabel(signal.ResourceId)}.";
+            UpdatePolicyPanel();
+            return;
+        }
+
+        _snapshot = _session.Current;
+        var updatedCity = _snapshot.Cities.FirstOrDefault(candidate => candidate.Id == city.Id);
+        var updatedSignal = updatedCity?.MarketSignals.FirstOrDefault(candidate => candidate.ResourceId == signal.ResourceId);
+        _warehousePolicyMessage = updatedSignal is null
+            ? $"Applied warehouse policy to {city.Name}; save {ShortHash(previousHash)} -> {ShortHash(_snapshot.SaveHash)}."
+            : $"Applied warehouse policy: {city.Name} {ResourceLabel(updatedSignal.ResourceId)} reserved {updatedSignal.SafetyStock}, reorder {updatedSignal.ReorderPoint}; save {ShortHash(previousHash)} -> {ShortHash(_snapshot.SaveHash)}.";
+
+        KeepValidSelection();
+        UpdatePrototypeView();
+    }
+
+    private void SetWarehousePolicyControlsEnabled(bool enabled)
+    {
+        if (_warehouseResourceOptions is not null)
+        {
+            _warehouseResourceOptions.Disabled = !enabled;
+        }
+
+        if (_warehouseSafetyInput is not null)
+        {
+            _warehouseSafetyInput.Editable = enabled;
+        }
+
+        if (_warehouseReorderInput is not null)
+        {
+            _warehouseReorderInput.Editable = enabled;
+        }
+
+        if (_warehouseApplyButton is not null)
+        {
+            _warehouseApplyButton.Disabled = !enabled;
+        }
+    }
+
+    private PrototypeCityView? SelectedWarehousePolicyCity()
+    {
+        if (_snapshot is null || _selectedCityId is null)
+        {
+            return null;
+        }
+
+        return _snapshot.Cities.FirstOrDefault(city => city.Id == _selectedCityId);
+    }
+
+    private PrototypeMarketSignal? SelectedWarehousePolicySignal()
+    {
+        if (_warehouseResourceOptions is null || _visibleWarehousePolicies.Count == 0)
+        {
+            return null;
+        }
+
+        var index = Math.Clamp(_warehouseResourceOptions.Selected, 0, _visibleWarehousePolicies.Count - 1);
+        return _visibleWarehousePolicies[index];
+    }
+
     private void UpdatePolicyPanel()
     {
         if (_snapshot is null || _policy is null)
@@ -699,6 +929,11 @@ public partial class BootstrapPanel : Control
             .ToArray();
 
         _policy.AppendText($"Focus city: {focusCity.Name}\n");
+        if (_warehousePolicyMessage is not null)
+        {
+            _policy.AppendText($"{_warehousePolicyMessage}\n");
+        }
+
         if (signals.Length == 0)
         {
             _policy.AppendText("No tracked reorder needs in this city.\n");
@@ -707,7 +942,9 @@ public partial class BootstrapPanel : Control
 
         foreach (var signal in signals)
         {
-            _policy.AppendText($"{ResourceLabel(signal.ResourceId)}: market {signal.MarketStock}/{signal.DesiredStock}, warehouse {signal.WarehouseStock}, safety {signal.SafetyStock}, reorder {signal.ReorderPoint}, P{signal.ShipmentPriority}\n");
+            var source = signal.IsPolicyOverridden ? "manual" : "default";
+            var exportable = Math.Max(0, signal.WarehouseStock - signal.SafetyStock);
+            _policy.AppendText($"{ResourceLabel(signal.ResourceId)}: market {signal.MarketStock}/{signal.DesiredStock}, warehouse {signal.WarehouseStock}, reserved {signal.SafetyStock}, exportable {exportable}, reorder {signal.ReorderPoint}, P{signal.ShipmentPriority}, {source}\n");
             _policy.AppendText($"Action: {signal.PolicyAction}\n");
         }
     }
@@ -788,7 +1025,7 @@ public partial class BootstrapPanel : Control
                 640,
                 214,
                 118,
-                126,
+                190,
                 126,
                 116);
         }
@@ -802,7 +1039,7 @@ public partial class BootstrapPanel : Control
                 540,
                 190,
                 108,
-                118,
+                168,
                 112,
                 104);
         }
@@ -814,7 +1051,7 @@ public partial class BootstrapPanel : Control
             430,
             156,
             84,
-            96,
+            148,
             92,
             92);
     }
@@ -849,6 +1086,20 @@ public partial class BootstrapPanel : Control
         button.AddThemeColorOverride("font_color", new Color(0.92f, 0.92f, 0.86f, 1.0f));
         button.AddThemeColorOverride("font_pressed_color", new Color(0.98f, 0.83f, 0.38f, 1.0f));
         return button;
+    }
+
+    private static SpinBox CreatePolicySpinBox(string name)
+    {
+        return new SpinBox
+        {
+            Name = name,
+            MinValue = 0,
+            MaxValue = 64,
+            Step = 1,
+            Rounded = true,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 30)
+        };
     }
 
     private static StyleBoxFlat CreateButtonStyle(Color background, Color border)

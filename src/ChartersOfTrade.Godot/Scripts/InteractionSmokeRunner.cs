@@ -86,6 +86,25 @@ public partial class InteractionSmokeRunner : Control
         await ClickMapAsync(map, MapPoint(map, reference, targetCity.X, targetCity.Y));
         AssertRichTextContains(uiRoot, targetCity.Name, "Company warehouse");
 
+        var warehouseResourceOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "WarehouseResourceOptions", StringComparison.Ordinal));
+        var warehouseSafetyInput = FindRequired<SpinBox>(uiRoot, control => string.Equals(control.Name, "WarehouseSafetyInput", StringComparison.Ordinal));
+        var warehouseReorderInput = FindRequired<SpinBox>(uiRoot, control => string.Equals(control.Name, "WarehouseReorderInput", StringComparison.Ordinal));
+        var applyWarehousePolicyButton = FindButton(uiRoot, "Apply Warehouse Policy");
+        await ScrollControlIntoViewAsync(sidebarScroll, warehouseResourceOptions, "Warehouse policy resource options");
+        AssertSmoke(!warehouseResourceOptions.Disabled, "Warehouse policy resource options stayed disabled after selecting a city.");
+        AssertSmoke(!applyWarehousePolicyButton.Disabled, "Apply Warehouse Policy stayed disabled after selecting a city.");
+        AssertControlIntersectsViewport(warehouseResourceOptions, "Warehouse policy resource options");
+        AssertControlIntersectsViewport(applyWarehousePolicyButton, "Apply Warehouse Policy");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "reserved"), "Warehouse policy panel did not explain reserved stock.");
+
+        var prePolicyHash = GetMetricValue(uiRoot, "Save Hash");
+        warehouseSafetyInput.Value = Math.Min(64, warehouseSafetyInput.Value + 1);
+        warehouseReorderInput.Value = Math.Min(64, Math.Max(warehouseReorderInput.Value + 1, warehouseSafetyInput.Value));
+        await PressButtonAsync(applyWarehousePolicyButton);
+        AssertSmoke(GetMetricValue(uiRoot, "Save Hash") != prePolicyHash, "Warehouse policy apply did not change the save hash.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "Applied warehouse policy"), "Warehouse policy apply did not produce confirmation text.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "manual"), "Warehouse policy apply did not mark the policy as manual.");
+
         await ClickMapAsync(map, RouteHitPoint(map, reference, targetRoute));
         AssertRichTextContains(uiRoot, targetRoute.Id, "cashflow");
 
@@ -177,6 +196,17 @@ public partial class InteractionSmokeRunner : Control
 
         scroll.ScrollVertical = 0;
         await WaitFrames(2);
+    }
+
+    private async Task ScrollControlIntoViewAsync(ScrollContainer scroll, Control control, string name)
+    {
+        var scrollRect = scroll.GetGlobalRect();
+        var controlRect = control.GetGlobalRect();
+        var contentY = controlRect.Position.Y - scrollRect.Position.Y + scroll.ScrollVertical;
+        var maxScroll = scroll.GetVScrollBar().MaxValue;
+        scroll.ScrollVertical = (int)Math.Clamp(contentY - 48.0, 0.0, maxScroll);
+        await WaitFrames(2);
+        AssertControlIntersectsViewport(control, name);
     }
 
     private void AssertControlIntersectsViewport(Control control, string name)
