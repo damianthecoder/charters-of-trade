@@ -18,6 +18,10 @@ var tests = new (string Name, Action Run)[]
     ("simulation bridge uses loaded content", SimulationBridgeUsesLoadedContent),
     ("prototype session ticks deterministically", PrototypeSessionTicksDeterministically),
     ("prototype session advances all systems", PrototypeSessionAdvancesAllSystems),
+    ("prototype route contracts are deterministic", PrototypeRouteContractsAreDeterministic),
+    ("prototype route contract selection affects logistics", PrototypeRouteContractSelectionAffectsLogistics),
+    ("prototype route contract rejects invalid ids", PrototypeRouteContractRejectsInvalidIds),
+    ("prototype selected route contract stays deterministic", PrototypeSelectedRouteContractStaysDeterministic),
     ("prototype consumption uses declared market needs", PrototypeConsumptionUsesDeclaredMarketNeeds),
     ("economy production never creates negative stock", EconomyProductionNeverCreatesNegativeStock),
     ("save-load-save preserves hash", SaveLoadSavePreservesHash),
@@ -214,6 +218,77 @@ static void PrototypeSessionAdvancesAllSystems()
     AssertTrue(tick.Cities.All(city => city.CompanyWarehouse.Values.All(amount => amount >= 0)), "Warehouse contains negative stock.");
 }
 
+static void PrototypeRouteContractsAreDeterministic()
+{
+    var bridge = new SimulationBridge();
+    var first = bridge.CreatePrototypeSession(424242);
+    var second = bridge.CreatePrototypeSession(424242);
+
+    AssertTrue(first.Current.AvailableContracts.Count > 0, "Expected starter session to expose route contracts.");
+    AssertEqual(
+        ContractFingerprint(first.Current.AvailableContracts),
+        ContractFingerprint(second.Current.AvailableContracts));
+}
+
+static void PrototypeRouteContractSelectionAffectsLogistics()
+{
+    var bridge = new SimulationBridge();
+    var automatic = bridge.CreatePrototypeSession(424242);
+    var automaticTick = automatic.AdvanceTick();
+
+    var controlled = bridge.CreatePrototypeSession(424242);
+    var contract = controlled.Current.AvailableContracts.Last();
+    var unselectedHash = controlled.Current.SaveHash;
+
+    AssertTrue(controlled.SelectRouteContract(contract.Id), "Expected contract selection to succeed.");
+    AssertEqual(contract.Id, controlled.Current.SelectedContractId);
+    AssertEqual(0, controlled.Current.Tick);
+    AssertTrue(controlled.Current.SaveHash != unselectedHash, "Pending contract selection should be represented in the state hash.");
+
+    var controlledTick = controlled.AdvanceTick();
+    var controlledLogistics = controlledTick.Ledger
+        .Where(entry => entry.Tick == controlledTick.Tick && entry.Category == "Logistics")
+        .ToArray();
+
+    AssertEqual(1, controlledLogistics.Length);
+    AssertTrue(controlledLogistics[0].RelatedId == contract.RouteId, "Expected selected contract route to drive logistics.");
+    AssertTrue(controlledLogistics[0].Message.Contains(contract.ResourceId, StringComparison.Ordinal), "Expected selected contract resource to be delivered.");
+    AssertTrue(automaticTick.SaveHash != controlledTick.SaveHash, "Selected contract should change the next logistics result.");
+}
+
+static void PrototypeRouteContractRejectsInvalidIds()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(424242);
+    var initialTick = session.Current.Tick;
+    var initialHash = session.Current.SaveHash;
+
+    AssertTrue(!session.SelectRouteContract("missing-contract"), "Expected invalid route contract id to be rejected.");
+    AssertEqual<string?>(null, session.Current.SelectedContractId);
+    AssertEqual(initialTick, session.Current.Tick);
+    AssertEqual(initialHash, session.Current.SaveHash);
+}
+
+static void PrototypeSelectedRouteContractStaysDeterministic()
+{
+    var bridge = new SimulationBridge();
+    var first = bridge.CreatePrototypeSession(20260429);
+    var second = bridge.CreatePrototypeSession(20260429);
+    var contractId = first.Current.AvailableContracts.First().Id;
+
+    AssertTrue(first.SelectRouteContract(contractId), "Expected first session contract selection to succeed.");
+    AssertTrue(second.SelectRouteContract(contractId), "Expected second session contract selection to succeed.");
+
+    for (var i = 0; i < 4; i++)
+    {
+        first.AdvanceTick();
+        second.AdvanceTick();
+    }
+
+    AssertEqual(first.Current.SaveHash, second.Current.SaveHash);
+    AssertEqual(first.Current.Company.Cash, second.Current.Company.Cash);
+    AssertEqual(ContractFingerprint(first.Current.AvailableContracts), ContractFingerprint(second.Current.AvailableContracts));
+}
+
 static void PrototypeConsumptionUsesDeclaredMarketNeeds()
 {
     var market = new Inventory(new Dictionary<string, int> { ["grain"] = 5, ["wood"] = 1, ["tools"] = 0 });
@@ -308,4 +383,21 @@ static void AssertTrue(bool condition, string message)
     {
         throw new InvalidOperationException(message);
     }
+}
+
+static string ContractFingerprint(IEnumerable<PrototypeRouteContractView> contracts)
+{
+    return string.Join("|", contracts.Select(contract =>
+        string.Format(
+            CultureInfo.InvariantCulture,
+            "{0}:{1}:{2}->{3}:{4}:{5:0.00}:{6:0.00}:{7:0.00}:{8}",
+            contract.Id,
+            contract.RouteId,
+            contract.FromNode,
+            contract.ToNode,
+            contract.ResourceId,
+            contract.ExpectedRevenue,
+            contract.TransportCost,
+            contract.ExpectedNet,
+            contract.CapacityPerDay)));
 }

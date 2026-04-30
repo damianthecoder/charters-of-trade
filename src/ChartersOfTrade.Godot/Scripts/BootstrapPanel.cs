@@ -3,10 +3,18 @@ using ChartersOfTrade.GodotBridge;
 using ChartersOfTrade.Logistics.Core;
 using Godot;
 
+public enum PrototypeMapMode
+{
+    Routes,
+    Profit,
+    Demand
+}
+
 [GlobalClass]
 public partial class BootstrapPanel : Control
 {
     private readonly Dictionary<string, Label> _metrics = [];
+    private readonly Dictionary<PrototypeMapMode, Button> _mapModeButtons = [];
 
     private PrototypeSession? _session;
     private PrototypeSnapshot? _snapshot;
@@ -15,8 +23,17 @@ public partial class BootstrapPanel : Control
     private RichTextLabel? _cities;
     private RichTextLabel? _inspector;
     private RichTextLabel? _warnings;
+    private Label? _contractSummary;
+    private OptionButton? _contractOptions;
+    private Button? _contractActionButton;
+    private IReadOnlyList<PrototypeRouteContractView> _visibleContracts = [];
+    private PrototypeMapMode _mapMode = PrototypeMapMode.Routes;
+    private string? _pendingContractId;
+    private string? _contractScopeKey;
+    private string? _invalidContractId;
     private string? _selectedCityId;
     private string? _selectedRouteId;
+    private bool _refreshingContractControl;
 
     [Export]
     public int Seed { get; set; } = 424242;
@@ -113,9 +130,36 @@ public partial class BootstrapPanel : Control
         runButton.Pressed += AdvanceFiveTicks;
         actions.AddChild(runButton);
 
+        sidebar.AddChild(CreateSectionLabel("Map Mode"));
+        var mapModes = new HBoxContainer();
+        mapModes.AddThemeConstantOverride("separation", 6);
+        sidebar.AddChild(mapModes);
+        AddMapModeButton(mapModes, "Routes", PrototypeMapMode.Routes);
+        AddMapModeButton(mapModes, "Profit", PrototypeMapMode.Profit);
+        AddMapModeButton(mapModes, "Demand", PrototypeMapMode.Demand);
+
+        sidebar.AddChild(CreateSectionLabel("Route Contract"));
+        var contractStack = CreateStack();
+        contractStack.AddThemeConstantOverride("separation", 6);
+        _contractSummary = CreateInlineLabel("");
+        contractStack.AddChild(_contractSummary);
+
+        _contractOptions = new OptionButton
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 30)
+        };
+        _contractOptions.ItemSelected += OnContractOptionSelected;
+        contractStack.AddChild(_contractOptions);
+
+        _contractActionButton = CreateButton("Select Contract");
+        _contractActionButton.Pressed += SelectVisibleRouteContract;
+        contractStack.AddChild(_contractActionButton);
+        sidebar.AddChild(contractStack);
+
         sidebar.AddChild(CreateSectionLabel("Inspector"));
         _inspector = CreateLog();
-        _inspector.CustomMinimumSize = new Vector2(0, 150);
+        _inspector.CustomMinimumSize = new Vector2(0, 165);
         sidebar.AddChild(_inspector);
 
         sidebar.AddChild(CreateSectionLabel("Priority Signals"));
@@ -193,7 +237,9 @@ public partial class BootstrapPanel : Control
 
         KeepValidSelection();
         _map?.SetSnapshot(_snapshot);
+        _map?.SetMapMode(_mapMode);
         _map?.SetSelection(_selectedCityId, _selectedRouteId);
+        UpdateMapModeButtons();
         SetMetric("Tick", _snapshot.Tick.ToString(CultureInfo.InvariantCulture));
         SetMetric("Day", _snapshot.Calendar.DayOfYear.ToString(CultureInfo.InvariantCulture));
         SetMetric("Cash", _snapshot.Company.Cash.ToString("0.00", CultureInfo.InvariantCulture));
@@ -212,6 +258,7 @@ public partial class BootstrapPanel : Control
         }
 
         UpdateInspector();
+        UpdateContractControl();
         UpdateWarnings();
 
         if (_ledger is not null)
@@ -233,17 +280,28 @@ public partial class BootstrapPanel : Control
         }
 
         _metrics.Clear();
+        _mapModeButtons.Clear();
         _map = null;
         _ledger = null;
         _cities = null;
         _inspector = null;
         _warnings = null;
+        _contractSummary = null;
+        _contractOptions = null;
+        _contractActionButton = null;
+        _visibleContracts = [];
+        _pendingContractId = null;
+        _contractScopeKey = null;
+        _invalidContractId = null;
+        _refreshingContractControl = false;
     }
 
     private void SelectCity(string cityId)
     {
         _selectedCityId = cityId;
         _selectedRouteId = null;
+        _pendingContractId = null;
+        _invalidContractId = null;
         UpdatePrototypeView();
     }
 
@@ -251,6 +309,8 @@ public partial class BootstrapPanel : Control
     {
         _selectedRouteId = routeId;
         _selectedCityId = null;
+        _pendingContractId = null;
+        _invalidContractId = null;
         UpdatePrototypeView();
     }
 
@@ -258,7 +318,35 @@ public partial class BootstrapPanel : Control
     {
         _selectedCityId = null;
         _selectedRouteId = null;
+        _pendingContractId = null;
+        _invalidContractId = null;
         UpdatePrototypeView();
+    }
+
+    private void SelectMapMode(PrototypeMapMode mode)
+    {
+        _mapMode = mode;
+        _map?.SetMapMode(_mapMode);
+        UpdateMapModeButtons();
+        UpdatePrototypeView();
+    }
+
+    private void AddMapModeButton(HBoxContainer parent, string text, PrototypeMapMode mode)
+    {
+        var button = CreateButton(text);
+        button.ToggleMode = true;
+        button.FocusMode = FocusModeEnum.None;
+        button.Pressed += () => SelectMapMode(mode);
+        parent.AddChild(button);
+        _mapModeButtons[mode] = button;
+    }
+
+    private void UpdateMapModeButtons()
+    {
+        foreach (var (mode, button) in _mapModeButtons)
+        {
+            button.ButtonPressed = mode == _mapMode;
+        }
     }
 
     private void KeepValidSelection()
@@ -310,7 +398,7 @@ public partial class BootstrapPanel : Control
 
         _inspector.AppendText("Select a city or route on the map.\n");
         _inspector.AppendText($"This tick cashflow: {_snapshot.LastTickCashDelta:+0.00;-0.00;0.00}\n");
-        _inspector.AppendText("Route color shows current cashflow signal; city rings show supply pressure.\n");
+        _inspector.AppendText($"Map mode: {_mapMode}\n");
     }
 
     private void AppendCityInspector(PrototypeCityView city)
@@ -332,19 +420,34 @@ public partial class BootstrapPanel : Control
         var pricePressure = _snapshot.Prices
             .OrderByDescending(price => price.Scarcity)
             .Take(3)
-            .Select(price => $"{price.ResourceId} {price.Price:0.00}")
+            .Select(price => $"{ResourceLabel(price.ResourceId)} {price.Price:0.00}, scarcity {price.Scarcity:0.00}")
+            .ToArray();
+        var routeLines = connectedRoutes
+            .Take(4)
+            .Select(route => $"{route.Id} to {OtherEndpointName(route, city.Id)} ({route.Mode}, cap {route.CapacityPerDay}/day, cash {FormatSignedMoney(LastCashForRoute(_snapshot, route.Id))})")
+            .ToArray();
+        var cityContracts = _snapshot.AvailableContracts
+            .Where(contract => contract.FromNode == city.Id || contract.ToNode == city.Id)
+            .OrderByDescending(contract => contract.ExpectedNet)
+            .ThenBy(contract => contract.Id, StringComparer.Ordinal)
             .ToArray();
 
-        _inspector.AppendText($"{city.Name}\n");
-        _inspector.AppendText($"Population {city.Population} | {city.Level} | supply {city.SupplySatisfaction:0.00}\n");
-        _inspector.AppendText($"Market: {StockSummary(city.MarketStock)}\n");
-        _inspector.AppendText($"Warehouse: {StockSummary(city.CompanyWarehouse)}\n");
-        _inspector.AppendText($"Connected routes: {connectedRoutes.Length}\n");
-        _inspector.AppendText($"Price pressure: {string.Join(", ", pricePressure)}\n");
+        _inspector.AppendText($"{city.Name} ({CityKindLabel(CityKindFor(city.Id))})\n");
+        _inspector.AppendText($"Population {city.Population} | level {city.Level}\n");
+        _inspector.AppendText($"Supply satisfaction {city.SupplySatisfaction:0.00} | unmet demand {SupplyPressure(city):0.00}\n");
+        _inspector.AppendText($"Market stock: {StockSummary(city.MarketStock)}\n");
+        _inspector.AppendText($"Company warehouse: {StockSummary(city.CompanyWarehouse)}\n");
+        _inspector.AppendText(connectedRoutes.Length > 0
+            ? $"Routes serving city ({connectedRoutes.Length}): {string.Join(", ", routeLines)}\n"
+            : "Routes serving city: none\n");
+        _inspector.AppendText(cityContracts.Length > 0
+            ? $"Contracts serving city: {cityContracts.Length}; best {ContractBrief(cityContracts[0])}\n"
+            : "Contracts serving city: none currently available\n");
+        _inspector.AppendText($"Charter market pressure: {string.Join(", ", pricePressure)}\n");
 
         if (recentLedger.Length > 0)
         {
-            _inspector.AppendText("Recent effects:\n");
+            _inspector.AppendText("Recent city effects:\n");
             foreach (var entry in recentLedger)
             {
                 _inspector.AppendText($"T{entry.Tick} {entry.Category}: {entry.Message}\n");
@@ -367,13 +470,34 @@ public partial class BootstrapPanel : Control
             .Take(5)
             .ToArray();
         var lastCash = recentLedger.Where(entry => entry.Tick == _snapshot.Tick).Sum(entry => entry.CashDelta);
-        var routeDemand = RouteDemandSignal(route.FromNode, route.ToNode);
+        var routeDemand = RouteDemandSignal(route);
+        var routeContracts = _snapshot.AvailableContracts
+            .Where(contract => contract.RouteId == route.Id)
+            .OrderByDescending(contract => contract.ExpectedNet)
+            .ThenBy(contract => contract.Id, StringComparer.Ordinal)
+            .ToArray();
+        var selectedContract = SelectedContract();
+        var selectedRouteContract = selectedContract is not null && selectedContract.RouteId == route.Id
+            ? selectedContract
+            : null;
 
-        _inspector.AppendText($"{route.Id}\n");
+        _inspector.AppendText($"Route {route.Id}\n");
         _inspector.AppendText($"{from?.Name ?? route.FromNode} -> {to?.Name ?? route.ToNode} | {route.Mode}\n");
-        _inspector.AppendText($"Capacity/day {route.CapacityPerDay} | lead {route.LeadDays}d | cost/unit {route.CostPerUnit:0.00}\n");
-        _inspector.AppendText($"Cashflow this tick: {lastCash:+0.00;-0.00;0.00}\n");
-        _inspector.AppendText($"Demand signal: {routeDemand}\n");
+        _inspector.AppendText($"Capacity {route.CapacityPerDay}/day | lead time {route.LeadDays} {DayLabel(route.LeadDays)} | cost {route.CostPerUnit:0.00}/unit\n");
+        _inspector.AppendText($"This tick route cashflow: {FormatSignedMoney(lastCash)}\n");
+        _inspector.AppendText($"Endpoint demand: {routeDemand}\n");
+        if (selectedRouteContract is not null)
+        {
+            _inspector.AppendText($"Selected contract: {ContractBrief(selectedRouteContract)}\n");
+        }
+        else if (routeContracts.Length > 0)
+        {
+            _inspector.AppendText($"Best contract: {ContractBrief(routeContracts[0])} ({routeContracts.Length} available)\n");
+        }
+        else
+        {
+            _inspector.AppendText("Contracts: none currently available for this route\n");
+        }
 
         if (recentLedger.Length == 0)
         {
@@ -399,32 +523,41 @@ public partial class BootstrapPanel : Control
         _warnings.Clear();
 
         var signals = new List<string>();
-        var weakestCity = _snapshot.Cities.OrderBy(city => city.SupplySatisfaction).FirstOrDefault();
-        if (weakestCity is not null && weakestCity.SupplySatisfaction < 0.80)
+
+        foreach (var city in _snapshot.Cities.Where(city => city.SupplySatisfaction < 0.82).OrderBy(city => city.SupplySatisfaction).Take(2))
         {
-            signals.Add($"{weakestCity.Name}: demand unmet, supply {weakestCity.SupplySatisfaction:0.00}");
+            signals.Add($"! {city.Name}: unmet demand, supply {city.SupplySatisfaction:0.00}");
         }
 
-        var worstRoute = _snapshot.Routes
+        foreach (var route in _snapshot.Routes
             .Select(route => new { Route = route, Cash = _snapshot.Ledger.Where(entry => entry.Tick == _snapshot.Tick && entry.RelatedId == route.Id).Sum(entry => entry.CashDelta) })
             .OrderBy(route => route.Cash)
-            .FirstOrDefault(route => route.Cash < 0);
-        if (worstRoute is not null)
+            .Where(route => route.Cash < 0)
+            .Take(2))
         {
-            signals.Add($"{worstRoute.Route.Id}: losing money {worstRoute.Cash:+0.00;-0.00}");
+            signals.Add($"! {route.Route.Id}: losing money {route.Cash:+0.00;-0.00}");
+        }
+
+        foreach (var route in _snapshot.Routes
+            .Select(route => new { Route = route, Pressure = RoutePressure(_snapshot, route) })
+            .Where(route => route.Pressure > 0.30 && route.Route.CapacityPerDay <= 12)
+            .OrderByDescending(route => route.Pressure)
+            .Take(2))
+        {
+            signals.Add($"! {route.Route.Id}: capacity pressure {route.Pressure:0.00}");
         }
 
         if (_snapshot.UnmetDemandRatio > 0.65)
         {
-            signals.Add($"Network: unmet demand {_snapshot.UnmetDemandRatio:0.0000}");
+            signals.Add($"! Network: unmet demand {_snapshot.UnmetDemandRatio:0.0000}");
         }
 
         if (_snapshot.LastTickCashDelta < 0)
         {
-            signals.Add($"Company cashflow fell {_snapshot.LastTickCashDelta:+0.00;-0.00}");
+            signals.Add($"! Company cashflow fell {_snapshot.LastTickCashDelta:+0.00;-0.00}");
         }
 
-        foreach (var signal in signals.Take(3))
+        foreach (var signal in signals.Distinct(StringComparer.Ordinal).Take(4))
         {
             _warnings.AppendText($"{signal}\n");
         }
@@ -518,6 +651,19 @@ public partial class BootstrapPanel : Control
         return label;
     }
 
+    private static Label CreateInlineLabel(string text)
+    {
+        var label = new Label
+        {
+            Text = text,
+            AutowrapMode = TextServer.AutowrapMode.WordSmart,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill
+        };
+        label.AddThemeFontSizeOverride("font_size", 12);
+        label.AddThemeColorOverride("font_color", new Color(0.82f, 0.83f, 0.76f, 1.0f));
+        return label;
+    }
+
     private static HSeparator CreateDivider()
     {
         return new HSeparator { CustomMinimumSize = new Vector2(0, 12) };
@@ -585,24 +731,343 @@ public partial class BootstrapPanel : Control
         return parts.Length == 0 ? "empty" : string.Join(", ", parts);
     }
 
-    private string RouteDemandSignal(string fromNode, string toNode)
+    private string RouteDemandSignal(TradeRoute route)
     {
         if (_snapshot is null)
         {
             return "unknown";
         }
 
-        var from = _snapshot.Cities.FirstOrDefault(city => city.Id == fromNode);
-        var to = _snapshot.Cities.FirstOrDefault(city => city.Id == toNode);
+        var from = _snapshot.Cities.FirstOrDefault(city => city.Id == route.FromNode);
+        var to = _snapshot.Cities.FirstOrDefault(city => city.Id == route.ToNode);
         if (from is null || to is null)
         {
             return "unknown";
         }
 
-        var fromStock = from.CompanyWarehouse.Values.DefaultIfEmpty(0).Sum();
-        var toPressure = 1.0 - to.SupplySatisfaction;
-        return $"{from.Name} stock {fromStock}, {to.Name} pressure {toPressure:0.00}";
+        return $"{from.Name} warehouse {StockUnits(from.CompanyWarehouse)}, unmet {SupplyPressure(from):0.00}; {to.Name} warehouse {StockUnits(to.CompanyWarehouse)}, unmet {SupplyPressure(to):0.00}";
     }
+
+    private void UpdateContractControl()
+    {
+        if (_snapshot is null || _contractSummary is null || _contractOptions is null || _contractActionButton is null)
+        {
+            return;
+        }
+
+        var selectedContractId = _snapshot.SelectedContractId;
+        var selectedContract = SelectedContract();
+        var scopeKey = ContractScopeKey();
+        var sameScope = string.Equals(_contractScopeKey, scopeKey, StringComparison.Ordinal);
+        var pendingContractId = _pendingContractId;
+        if (sameScope && _visibleContracts.Count > 0 && _contractOptions.Selected >= 0)
+        {
+            var previousIndex = Math.Clamp(_contractOptions.Selected, 0, _visibleContracts.Count - 1);
+            pendingContractId = _visibleContracts[previousIndex].Id;
+        }
+
+        _visibleContracts = _snapshot.AvailableContracts
+            .Where(ContractAppliesToCurrentSelection)
+            .OrderByDescending(contract => contract.ExpectedNet)
+            .ThenBy(contract => contract.Id, StringComparer.Ordinal)
+            .ToArray();
+
+        var invalidContractId = _invalidContractId;
+        if (invalidContractId is null
+            && sameScope
+            && pendingContractId is not null
+            && _snapshot.AvailableContracts.All(contract => contract.Id != pendingContractId))
+        {
+            invalidContractId = pendingContractId;
+        }
+
+        _refreshingContractControl = true;
+        _contractOptions.Clear();
+        _contractScopeKey = scopeKey;
+
+        if (_visibleContracts.Count == 0)
+        {
+            _contractOptions.AddItem(EmptyContractOptionLabel());
+            _contractOptions.Disabled = true;
+            _contractActionButton.Disabled = true;
+            _contractActionButton.Text = "No Contracts";
+            _pendingContractId = null;
+            _contractSummary.Text = EmptyContractSummary(invalidContractId, selectedContract);
+            _invalidContractId = null;
+            _refreshingContractControl = false;
+            return;
+        }
+
+        var preferredContractId = _visibleContracts.Any(contract => string.Equals(contract.Id, selectedContractId, StringComparison.Ordinal))
+            ? selectedContractId
+            : _visibleContracts.Any(contract => string.Equals(contract.Id, pendingContractId, StringComparison.Ordinal))
+                ? pendingContractId
+                : null;
+        var selectedIndex = 0;
+        for (var i = 0; i < _visibleContracts.Count; i++)
+        {
+            var contract = _visibleContracts[i];
+            _contractOptions.AddItem(ContractOptionLabel(contract, i), i);
+            if (string.Equals(contract.Id, preferredContractId, StringComparison.Ordinal))
+            {
+                selectedIndex = i;
+            }
+        }
+
+        _contractOptions.Select(selectedIndex);
+        _contractOptions.Disabled = false;
+        _refreshingContractControl = false;
+        RefreshContractSummary(selectedContractId, invalidContractId, selectedContract);
+        _invalidContractId = null;
+    }
+
+    private void OnContractOptionSelected(long _)
+    {
+        if (_refreshingContractControl)
+        {
+            return;
+        }
+
+        _invalidContractId = null;
+        RefreshContractSummary(_snapshot?.SelectedContractId, selectedContract: SelectedContract());
+    }
+
+    private void RefreshContractSummary(
+        string? selectedContractId,
+        string? invalidContractId = null,
+        PrototypeRouteContractView? selectedContract = null)
+    {
+        if (_contractSummary is null || _contractOptions is null || _contractActionButton is null || _visibleContracts.Count == 0)
+        {
+            return;
+        }
+
+        var candidate = _visibleContracts[Math.Clamp(_contractOptions.Selected, 0, _visibleContracts.Count - 1)];
+        var candidateIsSelected = selectedContractId is not null && string.Equals(candidate.Id, selectedContractId, StringComparison.Ordinal);
+        var candidateIsBest = string.Equals(candidate.Id, _visibleContracts[0].Id, StringComparison.Ordinal);
+        var summaryLead = candidateIsSelected
+            ? "Selected contract"
+            : candidateIsBest
+                ? "Best available"
+                : "Preview contract";
+        var lines = new List<string>();
+
+        if (invalidContractId is not null)
+        {
+            lines.Add($"Previous contract {invalidContractId} is no longer available.");
+        }
+
+        lines.Add($"{summaryLead}: {ContractSummary(candidate)}");
+        if (!candidateIsSelected && selectedContract is not null)
+        {
+            lines.Add($"Selected contract remains: {ContractBrief(selectedContract)}.");
+        }
+
+        _pendingContractId = candidate.Id;
+        _contractSummary.Text = string.Join("\n", lines);
+        _contractActionButton.Disabled = candidateIsSelected;
+        _contractActionButton.Text = candidateIsSelected
+            ? "Selected Contract"
+            : selectedContract is null
+                ? "Select Contract"
+                : "Switch Contract";
+    }
+
+    private void SelectVisibleRouteContract()
+    {
+        if (_session is null || _contractOptions is null || _visibleContracts.Count == 0)
+        {
+            return;
+        }
+
+        var index = Math.Clamp(_contractOptions.Selected, 0, _visibleContracts.Count - 1);
+        var contractId = _visibleContracts[index].Id;
+        if (!_session.SelectRouteContract(contractId))
+        {
+            _invalidContractId = contractId;
+        }
+        else
+        {
+            _invalidContractId = null;
+            _pendingContractId = contractId;
+        }
+
+        _snapshot = _session.Current;
+
+        KeepValidSelection();
+        UpdatePrototypeView();
+    }
+
+    private bool ContractAppliesToCurrentSelection(PrototypeRouteContractView contract)
+    {
+        if (_selectedRouteId is not null)
+        {
+            return string.Equals(contract.RouteId, _selectedRouteId, StringComparison.Ordinal);
+        }
+
+        if (_selectedCityId is not null)
+        {
+            return string.Equals(contract.FromNode, _selectedCityId, StringComparison.Ordinal)
+                || string.Equals(contract.ToNode, _selectedCityId, StringComparison.Ordinal);
+        }
+
+        return true;
+    }
+
+    private string ContractScopeKey()
+    {
+        if (_selectedRouteId is not null)
+        {
+            return $"route:{_selectedRouteId}";
+        }
+
+        if (_selectedCityId is not null)
+        {
+            return $"city:{_selectedCityId}";
+        }
+
+        return "map";
+    }
+
+    private string EmptyContractOptionLabel()
+    {
+        if (_selectedRouteId is not null)
+        {
+            return "No contracts on this route";
+        }
+
+        if (_selectedCityId is not null)
+        {
+            return "No contracts for this city";
+        }
+
+        return "No route contracts available";
+    }
+
+    private string EmptyContractSummary(string? invalidContractId, PrototypeRouteContractView? selectedContract)
+    {
+        var lines = new List<string>();
+        if (invalidContractId is not null)
+        {
+            lines.Add($"Previous contract {invalidContractId} is no longer available.");
+        }
+
+        lines.Add(_selectedRouteId is not null
+            ? $"No route contracts are currently available on {RouteDisplayName(_selectedRouteId)}."
+            : _selectedCityId is not null
+                ? $"No route contracts currently serve {CityName(_selectedCityId)}."
+                : "No route contracts are currently available.");
+
+        if (selectedContract is not null)
+        {
+            lines.Add($"Selected contract remains: {ContractBrief(selectedContract)}.");
+        }
+
+        return string.Join("\n", lines);
+    }
+
+    private string ContractOptionLabel(PrototypeRouteContractView contract, int index)
+    {
+        var rank = index == 0 ? "Best" : $"#{index + 1}";
+        return $"{rank}: {ResourceLabel(contract.ResourceId)} | {CityName(contract.FromNode)} -> {CityName(contract.ToNode)} | {FormatSignedMoney(contract.ExpectedNet)} net";
+    }
+
+    private string ContractSummary(PrototypeRouteContractView contract)
+    {
+        return $"{ResourceLabel(contract.ResourceId)} from {CityName(contract.FromNode)} to {CityName(contract.ToNode)} on {RouteDisplayName(contract.RouteId)}; revenue {contract.ExpectedRevenue.ToString("0.00", CultureInfo.InvariantCulture)}, cost {contract.TransportCost.ToString("0.00", CultureInfo.InvariantCulture)}, net {FormatSignedMoney(contract.ExpectedNet)}, capacity {contract.CapacityPerDay}/day";
+    }
+
+    private string ContractBrief(PrototypeRouteContractView contract)
+    {
+        return $"{ResourceLabel(contract.ResourceId)} {CityName(contract.FromNode)} -> {CityName(contract.ToNode)} on {contract.RouteId} ({FormatSignedMoney(contract.ExpectedNet)} net)";
+    }
+
+    private PrototypeRouteContractView? SelectedContract()
+    {
+        if (_snapshot?.SelectedContractId is null)
+        {
+            return null;
+        }
+
+        return _snapshot.AvailableContracts.FirstOrDefault(contract => contract.Id == _snapshot.SelectedContractId);
+    }
+
+    private string CityName(string cityId)
+    {
+        return _snapshot?.Cities.FirstOrDefault(city => city.Id == cityId)?.Name ?? cityId;
+    }
+
+    private string OtherEndpointName(TradeRoute route, string cityId)
+    {
+        var otherId = route.FromNode == cityId ? route.ToNode : route.FromNode;
+        return CityName(otherId);
+    }
+
+    private string RouteDisplayName(string routeId)
+    {
+        var route = _snapshot?.Routes.FirstOrDefault(route => route.Id == routeId);
+        return route is null
+            ? routeId
+            : $"{route.Id} ({CityName(route.FromNode)} -> {CityName(route.ToNode)})";
+    }
+
+    private static string ResourceLabel(string resourceId)
+    {
+        var words = resourceId.Split(new[] { '_', '-' }, StringSplitOptions.RemoveEmptyEntries);
+        return words.Length == 0
+            ? resourceId
+            : string.Join(" ", words.Select(word => CultureInfo.InvariantCulture.TextInfo.ToTitleCase(word.ToLowerInvariant())));
+    }
+
+    private static string FormatSignedMoney(decimal value)
+    {
+        return value.ToString("+0.00;-0.00;0.00", CultureInfo.InvariantCulture);
+    }
+
+    private static int StockUnits(IReadOnlyDictionary<string, int> stock)
+    {
+        return stock.Values.DefaultIfEmpty(0).Sum();
+    }
+
+    private static string DayLabel(int days)
+    {
+        return days == 1 ? "day" : "days";
+    }
+
+    private static string CityKindLabel(string kind)
+    {
+        return kind switch
+        {
+            "charter_town" => "charter town",
+            "port" => "port",
+            _ => "market town"
+        };
+    }
+
+    private string CityKindFor(string cityId)
+    {
+        return _snapshot?.World.Nodes.FirstOrDefault(node => node.Id == cityId)?.Kind ?? "market_town";
+    }
+
+    private static double SupplyPressure(PrototypeCityView city)
+    {
+        return Math.Clamp(1.0 - city.SupplySatisfaction, 0.0, 1.0);
+    }
+
+    private static double RoutePressure(PrototypeSnapshot snapshot, TradeRoute route)
+    {
+        var from = snapshot.Cities.FirstOrDefault(city => city.Id == route.FromNode);
+        var to = snapshot.Cities.FirstOrDefault(city => city.Id == route.ToNode);
+        return Math.Max(from is null ? 0 : SupplyPressure(from), to is null ? 0 : SupplyPressure(to));
+    }
+
+    private static decimal LastCashForRoute(PrototypeSnapshot snapshot, string routeId)
+    {
+        return snapshot.Ledger
+            .Where(entry => entry.Tick == snapshot.Tick && entry.RelatedId == routeId)
+            .Sum(entry => entry.CashDelta);
+    }
+
 }
 
 public partial class PrototypeMapView : Control
@@ -613,6 +1078,7 @@ public partial class PrototypeMapView : Control
     private string? _selectedRouteId;
     private string? _hoveredCityId;
     private string? _hoveredRouteId;
+    private PrototypeMapMode _mapMode = PrototypeMapMode.Routes;
     private float _flowPhase;
 
     public event Action<string>? CitySelected;
@@ -645,6 +1111,12 @@ public partial class PrototypeMapView : Control
     {
         _selectedCityId = cityId;
         _selectedRouteId = routeId;
+        QueueRedraw();
+    }
+
+    public void SetMapMode(PrototypeMapMode mode)
+    {
+        _mapMode = mode;
         QueueRedraw();
     }
 
@@ -711,12 +1183,13 @@ public partial class PrototypeMapView : Control
         var cell = MapScale(snapshot);
         foreach (var terrain in snapshot.World.Terrain)
         {
+            var terrainFade = _mapMode == PrototypeMapMode.Demand ? 0.78f : 1.0f;
             var color = terrain.IsWater
-                ? new Color(0.26f, 0.43f, 0.48f, 1.0f)
+                ? new Color(0.19f, 0.34f, 0.40f, 1.0f)
                 : new Color(
-                    0.55f + (float)(terrain.Fertility * 0.16),
-                    0.49f + (float)(terrain.Fertility * 0.18),
-                    0.36f + (float)(terrain.Moisture * 0.10),
+                    (0.50f + (float)(terrain.Fertility * 0.14)) * terrainFade,
+                    (0.48f + (float)(terrain.Fertility * 0.16)) * terrainFade,
+                    (0.36f + (float)(terrain.Moisture * 0.08)) * terrainFade,
                     1.0f);
             var point = PointFor(snapshot, terrain.X, terrain.Y);
             DrawRect(new Rect2(point, new Vector2(cell + 1, cell + 1)), color);
@@ -739,13 +1212,14 @@ public partial class PrototypeMapView : Control
             var related = _selectedCityId is not null && (route.FromNode == _selectedCityId || route.ToNode == _selectedCityId);
             var hovered = route.Id == _hoveredRouteId;
             var cash = LastCashForRoute(snapshot, route.Id);
-            var color = RouteColor(route.Mode, cash);
+            var pressure = RoutePressure(snapshot, route);
+            var color = RouteColor(route.Mode, cash, pressure, _mapMode);
             var alpha = _selectedCityId is not null || _selectedRouteId is not null
                 ? selected || related ? 1.0f : 0.25f
-                : 0.92f;
+                : _mapMode == PrototypeMapMode.Demand && pressure < 0.20 ? 0.42f : 0.92f;
             color.A = alpha;
 
-            var width = Math.Clamp(route.CapacityPerDay / 4.5f, 2.0f, 6.5f);
+            var width = RouteWidth(route, cash, pressure, _mapMode);
             if (selected)
             {
                 DrawLine(start, end, new Color(0.07f, 0.055f, 0.035f, 0.85f), width + 5.0f, true);
@@ -759,9 +1233,26 @@ public partial class PrototypeMapView : Control
             DrawLine(start, end, color, width, true);
             DrawRoutePulse(start, end, cash >= 0 ? color.Lightened(0.25f) : color, selected || hovered || related);
 
-            if (selected || hovered || cash != 0)
+            if (cash < 0)
+            {
+                DrawWarningMark((start + end) / 2.0f + new Vector2(-10, 10));
+            }
+            else if (_mapMode == PrototypeMapMode.Demand && pressure > 0.35)
+            {
+                DrawWarningMark((start + end) / 2.0f + new Vector2(-10, 10));
+            }
+
+            if ((_mapMode == PrototypeMapMode.Profit && cash != 0) || selected || hovered)
             {
                 DrawRouteCashLabel(start, end, cash);
+            }
+            else if (_mapMode == PrototypeMapMode.Routes && related)
+            {
+                DrawMapLabel((start + end) / 2.0f + new Vector2(8, -8), $"{route.Mode} cap {route.CapacityPerDay}");
+            }
+            else if (_mapMode == PrototypeMapMode.Demand && pressure > 0.30)
+            {
+                DrawMapLabel((start + end) / 2.0f + new Vector2(8, -8), $"pressure {pressure:0.00}");
             }
         }
     }
@@ -771,10 +1262,12 @@ public partial class PrototypeMapView : Control
         foreach (var city in snapshot.Cities)
         {
             var point = PointFor(snapshot, city.X, city.Y);
-            var radius = city.Id == "node_001" ? 8.0f : 5.5f;
-            var color = city.SupplySatisfaction >= 0.75
-                ? new Color(0.86f, 0.66f, 0.22f, 1.0f)
-                : new Color(0.72f, 0.18f, 0.14f, 1.0f);
+            var kind = CityKindFor(snapshot, city.Id);
+            var pressure = SupplyPressure(city);
+            var radius = kind == "charter_town" ? 8.5f : kind == "port" ? 7.0f : 6.0f;
+            var color = _mapMode == PrototypeMapMode.Demand
+                ? DemandCityColor(pressure)
+                : CityKindColor(kind, city.SupplySatisfaction);
             var selected = city.Id == _selectedCityId;
             var hovered = city.Id == _hoveredCityId;
             var related = _selectedRouteId is not null && snapshot.Routes.Any(route => route.Id == _selectedRouteId && (route.FromNode == city.Id || route.ToNode == city.Id));
@@ -785,23 +1278,61 @@ public partial class PrototypeMapView : Control
             }
 
             DrawCircle(point, radius + 2.0f, new Color(0.11f, 0.075f, 0.035f, 1.0f));
-            DrawCircle(point, radius, color);
+            DrawCityStamp(point, kind, radius, color);
             DrawArc(point, radius + 10.0f, 0.0f, Mathf.Tau * (float)Math.Clamp(city.SupplySatisfaction, 0.0, 1.0), 32, new Color(0.17f, 0.48f, 0.36f, 0.9f), 2.0f, true);
+
+            if (pressure > 0.22)
+            {
+                DrawArc(point, radius + 14.0f, 0.0f, Mathf.Tau * (float)Math.Clamp(pressure, 0.0, 1.0), 32, new Color(0.62f, 0.17f, 0.14f, 0.78f), 2.0f, true);
+            }
+
+            if (city.SupplySatisfaction < 0.80)
+            {
+                DrawWarningMark(point + new Vector2(radius + 8.0f, -radius - 5.0f));
+            }
+
+            if (selected || hovered || (_mapMode == PrototypeMapMode.Demand && pressure > 0.25))
+            {
+                DrawMapLabel(point + new Vector2(12, -10), $"{city.Name} | supply {city.SupplySatisfaction:0.00}");
+            }
         }
     }
 
     private void DrawLegend(PrototypeSnapshot snapshot)
     {
-        var origin = new Vector2(18, Size.Y - 102);
-        DrawRect(new Rect2(origin - new Vector2(10, 16), new Vector2(260, 96)), new Color(0.12f, 0.09f, 0.055f, 0.72f));
-        DrawString(_font, origin, "Flow map", HorizontalAlignment.Left, 180, 13);
-        DrawLine(origin + new Vector2(0, 22), origin + new Vector2(42, 22), new Color(0.21f, 0.55f, 0.42f, 1.0f), 4.0f, true);
-        DrawString(_font, origin + new Vector2(52, 27), "profitable movement", HorizontalAlignment.Left, 170, 12);
-        DrawLine(origin + new Vector2(0, 44), origin + new Vector2(42, 44), new Color(0.54f, 0.17f, 0.12f, 1.0f), 4.0f, true);
-        DrawString(_font, origin + new Vector2(52, 49), "loss / pressure", HorizontalAlignment.Left, 170, 12);
-        DrawCircle(origin + new Vector2(16, 66), 6.0f, new Color(0.86f, 0.66f, 0.22f, 1.0f));
-        DrawArc(origin + new Vector2(16, 66), 12.0f, 0.0f, Mathf.Tau * 0.72f, 24, new Color(0.17f, 0.48f, 0.36f, 0.9f), 2.0f, true);
-        DrawString(_font, origin + new Vector2(52, 71), "city supply ring", HorizontalAlignment.Left, 170, 12);
+        var origin = new Vector2(18, Size.Y - 122);
+        DrawRect(new Rect2(origin - new Vector2(10, 16), new Vector2(288, 116)), new Color(0.12f, 0.09f, 0.055f, 0.74f));
+        DrawString(_font, origin, $"{_mapMode} mode", HorizontalAlignment.Left, 180, 13);
+
+        if (_mapMode == PrototypeMapMode.Routes)
+        {
+            DrawLine(origin + new Vector2(0, 22), origin + new Vector2(44, 22), new Color(0.22f, 0.45f, 0.63f, 1.0f), 5.0f, true);
+            DrawString(_font, origin + new Vector2(54, 27), "coastal capacity", HorizontalAlignment.Left, 190, 12);
+            DrawLine(origin + new Vector2(0, 46), origin + new Vector2(44, 46), new Color(0.56f, 0.38f, 0.18f, 1.0f), 3.0f, true);
+            DrawString(_font, origin + new Vector2(54, 51), "road capacity", HorizontalAlignment.Left, 190, 12);
+        }
+        else if (_mapMode == PrototypeMapMode.Profit)
+        {
+            DrawLine(origin + new Vector2(0, 22), origin + new Vector2(44, 22), new Color(0.21f, 0.55f, 0.42f, 1.0f), 4.0f, true);
+            DrawString(_font, origin + new Vector2(54, 27), "profitable movement", HorizontalAlignment.Left, 190, 12);
+            DrawLine(origin + new Vector2(0, 46), origin + new Vector2(44, 46), new Color(0.62f, 0.17f, 0.14f, 1.0f), 4.0f, true);
+            DrawString(_font, origin + new Vector2(54, 51), "route losing money", HorizontalAlignment.Left, 190, 12);
+        }
+        else
+        {
+            DrawCircle(origin + new Vector2(16, 24), 7.0f, new Color(0.62f, 0.17f, 0.14f, 1.0f));
+            DrawArc(origin + new Vector2(16, 24), 14.0f, 0.0f, Mathf.Tau * 0.58f, 24, new Color(0.62f, 0.17f, 0.14f, 0.78f), 2.0f, true);
+            DrawString(_font, origin + new Vector2(54, 29), "unmet demand pressure", HorizontalAlignment.Left, 190, 12);
+            DrawLine(origin + new Vector2(0, 48), origin + new Vector2(44, 48), new Color(0.71f, 0.48f, 0.14f, 1.0f), 4.0f, true);
+            DrawString(_font, origin + new Vector2(54, 53), "pressure on route", HorizontalAlignment.Left, 190, 12);
+        }
+
+        DrawCityStamp(origin + new Vector2(12, 74), "charter_town", 7.0f, CityKindColor("charter_town", 1.0));
+        DrawString(_font, origin + new Vector2(32, 79), "C charter", HorizontalAlignment.Left, 82, 12);
+        DrawCityStamp(origin + new Vector2(118, 74), "port", 6.0f, CityKindColor("port", 1.0));
+        DrawString(_font, origin + new Vector2(136, 79), "P port", HorizontalAlignment.Left, 70, 12);
+        DrawCityStamp(origin + new Vector2(206, 74), "market_town", 6.0f, CityKindColor("market_town", 1.0));
+        DrawString(_font, origin + new Vector2(224, 79), "M market", HorizontalAlignment.Left, 70, 12);
 
         if (_selectedCityId is null && _selectedRouteId is null)
         {
@@ -931,21 +1462,124 @@ public partial class PrototypeMapView : Control
         return point.DistanceTo(projection);
     }
 
-    private static Color RouteColor(string mode, decimal cash)
+    private static string CityKindFor(PrototypeSnapshot snapshot, string cityId)
     {
-        if (cash > 0)
+        return snapshot.World.Nodes.FirstOrDefault(node => node.Id == cityId)?.Kind ?? "market_town";
+    }
+
+    private static Color CityKindColor(string kind, double supplySatisfaction)
+    {
+        if (supplySatisfaction < 0.75)
+        {
+            return new Color(0.62f, 0.17f, 0.14f, 1.0f);
+        }
+
+        return kind switch
+        {
+            "charter_town" => new Color(0.81f, 0.62f, 0.20f, 1.0f),
+            "port" => new Color(0.22f, 0.50f, 0.61f, 1.0f),
+            _ => new Color(0.40f, 0.58f, 0.39f, 1.0f)
+        };
+    }
+
+    private static Color DemandCityColor(double pressure)
+    {
+        return pressure switch
+        {
+            > 0.45 => new Color(0.62f, 0.17f, 0.14f, 1.0f),
+            > 0.25 => new Color(0.71f, 0.48f, 0.14f, 1.0f),
+            _ => new Color(0.29f, 0.52f, 0.40f, 1.0f)
+        };
+    }
+
+    private void DrawCityStamp(Vector2 point, string kind, float radius, Color color)
+    {
+        var ink = new Color(0.09f, 0.065f, 0.04f, 1.0f);
+        if (kind == "charter_town")
+        {
+            var size = new Vector2(radius * 2.1f, radius * 2.1f);
+            DrawRect(new Rect2(point - size / 2.0f, size), ink);
+            DrawRect(new Rect2(point - size / 2.0f + new Vector2(2, 2), size - new Vector2(4, 4)), color);
+            DrawString(_font, point + new Vector2(-4, 5), "C", HorizontalAlignment.Left, 16, 11);
+            return;
+        }
+
+        if (kind == "port")
+        {
+            var diamond =
+                new[]
+                {
+                    point + new Vector2(0, -radius - 2),
+                    point + new Vector2(radius + 2, 0),
+                    point + new Vector2(0, radius + 2),
+                    point + new Vector2(-radius - 2, 0),
+                    point + new Vector2(0, -radius - 2)
+                };
+            DrawPolyline(diamond, ink, 3.0f, true);
+            DrawPolyline(diamond, color, 2.0f, true);
+            DrawString(_font, point + new Vector2(-4, 5), "P", HorizontalAlignment.Left, 16, 11);
+            return;
+        }
+
+        DrawCircle(point, radius + 1.8f, ink);
+        DrawCircle(point, radius, color);
+        DrawString(_font, point + new Vector2(-5, 5), "M", HorizontalAlignment.Left, 16, 11);
+    }
+
+    private void DrawWarningMark(Vector2 point)
+    {
+        DrawCircle(point, 6.5f, new Color(0.10f, 0.065f, 0.035f, 0.95f));
+        DrawCircle(point, 5.0f, new Color(0.72f, 0.18f, 0.14f, 0.95f));
+        DrawString(_font, point + new Vector2(-2.8f, 4.0f), "!", HorizontalAlignment.Left, 12, 11);
+    }
+
+    private static float RouteWidth(TradeRoute route, decimal cash, double pressure, PrototypeMapMode mode)
+    {
+        return mode switch
+        {
+            PrototypeMapMode.Profit => Math.Clamp(2.0f + (float)Math.Min(4.0m, Math.Abs(cash) / 3.0m), 2.0f, 7.0f),
+            PrototypeMapMode.Demand => Math.Clamp(2.0f + (float)pressure * 5.0f, 2.0f, 7.0f),
+            _ => Math.Clamp(route.CapacityPerDay / 3.8f, 2.4f, 7.0f)
+        };
+    }
+
+    private static Color RouteColor(string mode, decimal cash, double pressure, PrototypeMapMode mapMode)
+    {
+        if (mapMode == PrototypeMapMode.Demand)
+        {
+            return pressure switch
+            {
+                > 0.45 => new Color(0.62f, 0.17f, 0.14f, 1.0f),
+                > 0.25 => new Color(0.71f, 0.48f, 0.14f, 1.0f),
+                _ => new Color(0.30f, 0.42f, 0.39f, 1.0f)
+            };
+        }
+
+        if (mapMode == PrototypeMapMode.Profit && cash > 0)
         {
             return new Color(0.21f, 0.55f, 0.42f, 1.0f);
         }
 
-        if (cash < 0)
+        if (mapMode == PrototypeMapMode.Profit && cash < 0)
         {
-            return new Color(0.54f, 0.17f, 0.12f, 1.0f);
+            return new Color(0.62f, 0.17f, 0.14f, 1.0f);
         }
 
         return mode == "coastal"
-            ? new Color(0.20f, 0.43f, 0.58f, 1.0f)
-            : new Color(0.47f, 0.32f, 0.18f, 1.0f);
+            ? new Color(0.22f, 0.45f, 0.63f, 1.0f)
+            : new Color(0.56f, 0.38f, 0.18f, 1.0f);
+    }
+
+    private static double SupplyPressure(PrototypeCityView city)
+    {
+        return Math.Clamp(1.0 - city.SupplySatisfaction, 0.0, 1.0);
+    }
+
+    private static double RoutePressure(PrototypeSnapshot snapshot, TradeRoute route)
+    {
+        var from = snapshot.Cities.FirstOrDefault(city => city.Id == route.FromNode);
+        var to = snapshot.Cities.FirstOrDefault(city => city.Id == route.ToNode);
+        return Math.Max(from is null ? 0 : SupplyPressure(from), to is null ? 0 : SupplyPressure(to));
     }
 
     private static decimal LastCashForRoute(PrototypeSnapshot snapshot, string routeId)

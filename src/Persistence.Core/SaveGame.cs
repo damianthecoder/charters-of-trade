@@ -43,7 +43,8 @@ public sealed record SaveGame(
     IReadOnlyList<CitySaveState> Cities,
     IReadOnlyList<RouteSaveState> Routes,
     IReadOnlyList<EventSaveState> Events,
-    FogOfWarState FogOfWar);
+    FogOfWarState FogOfWar,
+    string? PendingRouteContractId);
 
 public static class SaveCodec
 {
@@ -146,6 +147,11 @@ public static class SaveValidator
             {
                 errors.Add($"route '{route.Id}' capacityPerDay must be positive");
             }
+        }
+
+        if (save.PendingRouteContractId is not null && string.IsNullOrWhiteSpace(save.PendingRouteContractId))
+        {
+            errors.Add("pendingRouteContractId must not be empty when present");
         }
 
         if (errors.Count > 0)

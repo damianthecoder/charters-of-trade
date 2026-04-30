@@ -26,6 +26,17 @@ public sealed record PrototypeLedgerEntry(
     decimal CashDelta,
     string RelatedId);
 
+public sealed record PrototypeRouteContractView(
+    string Id,
+    string RouteId,
+    string FromNode,
+    string ToNode,
+    string ResourceId,
+    decimal ExpectedRevenue,
+    decimal TransportCost,
+    decimal ExpectedNet,
+    int CapacityPerDay);
+
 public sealed record PrototypeSnapshot(
     int Tick,
     GeneratedWorld World,
@@ -40,6 +51,10 @@ public sealed record PrototypeSnapshot(
     IReadOnlyList<PrototypeLedgerEntry> Ledger,
     string SaveHash)
 {
+    public IReadOnlyList<PrototypeRouteContractView> AvailableContracts { get; init; } = [];
+
+    public string? SelectedContractId { get; init; }
+
     public double UnmetDemandRatio => Prices.Count == 0 ? 0 : Math.Round(Prices.Average(price => Math.Max(0, price.Scarcity)), 4);
 
     public decimal LastTickCashDelta => Ledger.Where(entry => entry.Tick == Tick).Sum(entry => entry.CashDelta);
@@ -57,6 +72,7 @@ public sealed class PrototypeSession
     private CompanyState _company = new(1000m, 0m, 50, "merchant_league");
     private CalendarState _calendar = new(1, 1);
     private OpportunityScore _aiChoice = new("none", 0m);
+    private string? _selectedContractId;
 
     public PrototypeSession(GeneratedWorld world, GameContent content, IReadOnlyList<TradeRoute> routes)
     {
@@ -65,7 +81,7 @@ public sealed class PrototypeSession
         Routes = routes;
         _needs = StarterScenarioFactory.CreateNeeds(content.Resources);
         _cities = world.Nodes.OrderBy(node => node.Id, StringComparer.Ordinal).Select(CreateCity).ToList();
-        Current = BuildSnapshot();
+        Current = BuildSnapshot(0);
     }
 
     public GeneratedWorld World { get; }
@@ -74,12 +90,32 @@ public sealed class PrototypeSession
 
     public PrototypeSnapshot Current { get; private set; }
 
+    public bool SelectRouteContract(string contractId)
+    {
+        if (string.IsNullOrWhiteSpace(contractId))
+        {
+            return false;
+        }
+
+        var contracts = BuildAvailableContracts();
+        if (contracts.All(contract => contract.Id != contractId))
+        {
+            return false;
+        }
+
+        _selectedContractId = contractId;
+        Current = BuildSnapshot(Current.Tick);
+        return true;
+    }
+
     public PrototypeSnapshot AdvanceTick()
     {
         var nextTick = Current.Tick + 1;
         _calendar = _calendar with { DayOfYear = _calendar.DayOfYear + 1 };
+        var selectedContract = SelectedAvailableContract();
+        var reservation = ReservationFor(selectedContract);
 
-        var productionCash = RunProduction(nextTick);
+        var productionCash = RunProduction(nextTick, reservation);
         var logisticsCash = RunLogistics(nextTick);
         var aiCash = RunAi(nextTick);
         RunCityGrowth(nextTick);
@@ -87,7 +123,7 @@ public sealed class PrototypeSession
         var cashDelta = productionCash + logisticsCash + aiCash;
         _company = _company with { Cash = decimal.Round(_company.Cash + cashDelta, 2, MidpointRounding.AwayFromZero) };
 
-        Current = BuildSnapshot();
+        Current = BuildSnapshot(nextTick);
         return Current;
     }
 
@@ -122,17 +158,31 @@ public sealed class PrototypeSession
             1.0);
     }
 
-    private decimal RunProduction(int tick)
+    private decimal RunProduction(int tick, ProductionReservation? reservation)
     {
         var cash = 0m;
         foreach (var city in _cities.OrderBy(city => city.Id, StringComparer.Ordinal))
         {
-            var recipes = _content.Recipes.Where(recipe => CanRunInCity(city, recipe)).ToArray();
-            var results = _economy.RunProduction(city.CompanyWarehouse, recipes);
-            var producedIds = results
-                .Where(result => result.Produced)
-                .Select(result => result.RecipeId)
-                .ToHashSet(StringComparer.Ordinal);
+            var producedIds = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var recipe in _content.Recipes.OrderBy(recipe => recipe.Id, StringComparer.Ordinal))
+            {
+                if (!CanRunInCity(city, recipe, reservation))
+                {
+                    continue;
+                }
+
+                foreach (var input in recipe.Inputs)
+                {
+                    city.CompanyWarehouse.TryRemove(input.ResourceId, input.Amount);
+                }
+
+                foreach (var output in recipe.Outputs)
+                {
+                    city.CompanyWarehouse.Add(output.ResourceId, output.Amount);
+                }
+
+                producedIds.Add(recipe.Id);
+            }
 
             if (producedIds.Count == 0)
             {
@@ -140,7 +190,7 @@ public sealed class PrototypeSession
             }
 
             var cityCash = 0m;
-            foreach (var recipe in recipes.Where(recipe => producedIds.Contains(recipe.Id)))
+            foreach (var recipe in _content.Recipes.Where(recipe => producedIds.Contains(recipe.Id)))
             {
                 foreach (var output in recipe.Outputs)
                 {
@@ -165,6 +215,17 @@ public sealed class PrototypeSession
 
     private decimal RunLogistics(int tick)
     {
+        var selectedContract = SelectedAvailableContract();
+        if (selectedContract is not null)
+        {
+            return ExecuteContract(tick, selectedContract, selected: true);
+        }
+
+        if (_selectedContractId is not null)
+        {
+            _selectedContractId = null;
+        }
+
         var charter = _cities[0];
         var prices = PricesFor(charter);
         var needsByResource = _needs.ToDictionary(need => need.ResourceId, StringComparer.Ordinal);
@@ -204,6 +265,34 @@ public sealed class PrototypeSession
         return cash;
     }
 
+    private decimal ExecuteContract(int tick, PrototypeRouteContractView contract, bool selected)
+    {
+        var route = Routes.FirstOrDefault(route => route.Id == contract.RouteId);
+        var source = _cities.FirstOrDefault(city => city.Id == contract.FromNode);
+        var destination = _cities.FirstOrDefault(city => city.Id == contract.ToNode);
+        if (route is null || source is null || destination is null)
+        {
+            return 0m;
+        }
+
+        var units = Math.Min(source.CompanyWarehouse.Get(contract.ResourceId), ContractUnits(route));
+        if (units <= 0 || !source.CompanyWarehouse.TryRemove(contract.ResourceId, units))
+        {
+            return 0m;
+        }
+
+        var prices = PricesFor(destination);
+        prices.TryGetValue(contract.ResourceId, out var price);
+        destination.Market.Add(contract.ResourceId, units);
+
+        var revenue = price * units;
+        var transportCost = route.CostPerUnit * units;
+        var net = decimal.Round(revenue - transportCost, 2, MidpointRounding.AwayFromZero);
+        var label = selected ? "selected contract" : "contract";
+        _ledger.Add(new PrototypeLedgerEntry(tick, "Logistics", $"{route.Id}: {label} delivered {units} {contract.ResourceId} from {source.Name}", net, route.Id));
+        return net;
+    }
+
     private decimal RunAi(int tick)
     {
         var opportunities = BuildOpportunities().ToArray();
@@ -237,11 +326,16 @@ public sealed class PrototypeSession
         }
     }
 
-    private PrototypeSnapshot BuildSnapshot()
+    private PrototypeSnapshot BuildSnapshot(int tick)
     {
         var charter = _cities[0];
         var prices = _economy.CalculatePrices(_content.Resources, charter.Market, _needs);
-        var save = BuildSave(prices);
+        var contracts = BuildAvailableContracts();
+        var selectedContractId = contracts.Any(contract => contract.Id == _selectedContractId)
+            ? _selectedContractId
+            : null;
+        _selectedContractId = selectedContractId;
+        var save = BuildSave(prices, selectedContractId);
         var views = _cities
             .OrderBy(city => city.Id, StringComparer.Ordinal)
             .Select(city => new PrototypeCityView(
@@ -257,7 +351,7 @@ public sealed class PrototypeSession
             .ToArray();
 
         return new PrototypeSnapshot(
-            Current?.Tick + 1 ?? 0,
+            tick,
             World,
             _content.ContentHash,
             _content.Resources,
@@ -268,10 +362,92 @@ public sealed class PrototypeSession
             _calendar,
             _aiChoice,
             _ledger.ToArray(),
-            SaveCodec.ComputeStateHash(save));
+            SaveCodec.ComputeStateHash(save))
+        {
+            AvailableContracts = contracts,
+            SelectedContractId = selectedContractId
+        };
     }
 
-    private SaveGame BuildSave(IReadOnlyList<MarketPrice> prices)
+    private IReadOnlyList<PrototypeRouteContractView> BuildAvailableContracts()
+    {
+        var charter = _cities[0];
+        var needsByResource = _needs.ToDictionary(need => need.ResourceId, StringComparer.Ordinal);
+        var prices = PricesFor(charter);
+        var contracts = new List<PrototypeRouteContractView>();
+
+        foreach (var route in Routes
+            .Where(route => route.FromNode == charter.Id || route.ToNode == charter.Id)
+            .OrderBy(route => route.Id, StringComparer.Ordinal))
+        {
+            var sourceId = route.FromNode == charter.Id ? route.ToNode : route.FromNode;
+            var source = _cities.FirstOrDefault(city => city.Id == sourceId);
+            if (source is null)
+            {
+                continue;
+            }
+
+            foreach (var stock in source.CompanyWarehouse.Stock
+                .Where(kvp => kvp.Value > 0 && needsByResource.ContainsKey(kvp.Key))
+                .OrderBy(kvp => kvp.Key, StringComparer.Ordinal))
+            {
+                var units = Math.Min(stock.Value, ContractUnits(route));
+                if (units <= 0)
+                {
+                    continue;
+                }
+
+                prices.TryGetValue(stock.Key, out var price);
+                var expectedRevenue = decimal.Round(price * units, 2, MidpointRounding.AwayFromZero);
+                var transportCost = decimal.Round(route.CostPerUnit * units, 2, MidpointRounding.AwayFromZero);
+                contracts.Add(new PrototypeRouteContractView(
+                    $"{route.Id}:{stock.Key}",
+                    route.Id,
+                    source.Id,
+                    charter.Id,
+                    stock.Key,
+                    expectedRevenue,
+                    transportCost,
+                    expectedRevenue - transportCost,
+                    route.CapacityPerDay));
+            }
+        }
+
+        return contracts
+            .OrderByDescending(contract => contract.ExpectedNet)
+            .ThenBy(contract => contract.Id, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private PrototypeRouteContractView? SelectedAvailableContract()
+    {
+        if (_selectedContractId is null)
+        {
+            return null;
+        }
+
+        return BuildAvailableContracts().FirstOrDefault(contract => contract.Id == _selectedContractId);
+    }
+
+    private ProductionReservation? ReservationFor(PrototypeRouteContractView? contract)
+    {
+        if (contract is null)
+        {
+            return null;
+        }
+
+        var route = Routes.FirstOrDefault(route => route.Id == contract.RouteId);
+        var source = _cities.FirstOrDefault(city => city.Id == contract.FromNode);
+        if (route is null || source is null)
+        {
+            return null;
+        }
+
+        var amount = Math.Min(source.CompanyWarehouse.Get(contract.ResourceId), ContractUnits(route));
+        return amount <= 0 ? null : new ProductionReservation(source.Id, contract.ResourceId, amount);
+    }
+
+    private SaveGame BuildSave(IReadOnlyList<MarketPrice> prices, string? selectedContractId)
     {
         var priceState = prices.ToDictionary(price => price.ResourceId, price => price.Price, StringComparer.Ordinal);
         var cities = _cities.Select(city => new CitySaveState(
@@ -300,7 +476,8 @@ public sealed class PrototypeSession
             cities,
             Routes.Select(route => new RouteSaveState(route.Id, route.FromNode, route.ToNode, route.Mode, route.CapacityPerDay, ["food", "fuel", "construction"])).ToArray(),
             [],
-            new FogOfWarState(_cities.Take(4).Select(city => city.Id).ToArray()));
+            new FogOfWarState(_cities.Take(4).Select(city => city.Id).ToArray()),
+            selectedContractId);
     }
 
     private IEnumerable<Opportunity> BuildOpportunities()
@@ -347,6 +524,11 @@ public sealed class PrototypeSession
         return Math.Clamp((need.DesiredStock - city.Market.Get(need.ResourceId)) / (double)Math.Max(1, need.DesiredStock), 0, 1);
     }
 
+    private static int ContractUnits(TradeRoute route)
+    {
+        return Math.Max(1, Math.Min(3, route.CapacityPerDay / 4));
+    }
+
     public static int ConsumeNeeds(Inventory market, IEnumerable<MarketNeed> needs)
     {
         var consumed = 0;
@@ -362,14 +544,25 @@ public sealed class PrototypeSession
         return consumed;
     }
 
-    private static bool CanRunInCity(RuntimeCity city, RecipeDef recipe)
+    private static bool CanRunInCity(RuntimeCity city, RecipeDef recipe, ProductionReservation? reservation)
     {
         if (recipe.Inputs.Count == 0)
         {
             return recipe.Outputs.Any(output => city.CompanyWarehouse.Get(output.ResourceId) > 0 || city.Market.Get(output.ResourceId) > 0);
         }
 
-        return recipe.Inputs.All(input => city.CompanyWarehouse.Get(input.ResourceId) >= input.Amount);
+        return recipe.Inputs.All(input => AvailableForProduction(city, input.ResourceId, reservation) >= input.Amount);
+    }
+
+    private static int AvailableForProduction(RuntimeCity city, string resourceId, ProductionReservation? reservation)
+    {
+        var stock = city.CompanyWarehouse.Get(resourceId);
+        if (reservation is null || reservation.CityId != city.Id || reservation.ResourceId != resourceId)
+        {
+            return stock;
+        }
+
+        return Math.Max(0, stock - reservation.Amount);
     }
 
     private static PopulationCohorts ApplyPopulationDelta(PopulationCohorts population, int delta)
@@ -416,4 +609,6 @@ public sealed class PrototypeSession
         public Inventory CompanyWarehouse { get; } = companyWarehouse;
         public double SupplySatisfaction { get; set; } = supplySatisfaction;
     }
+
+    private sealed record ProductionReservation(string CityId, string ResourceId, int Amount);
 }
