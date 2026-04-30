@@ -149,6 +149,28 @@ public sealed record PrototypeNpcPressureView(
     bool CanContest,
     string Reason);
 
+public sealed record PrototypeScenarioObjectiveView(
+    string ScenarioId,
+    string Label,
+    int RulesVersion,
+    int CurrentTick,
+    int TickLimit,
+    string EndReason,
+    bool IsComplete,
+    bool IsWon,
+    decimal CurrentCash,
+    decimal CashTarget,
+    int CompletedCharters,
+    int RequiredCharters,
+    int DistinctResources,
+    int RequiredDistinctResources,
+    int StableNeeds,
+    int RequiredStableNeeds,
+    int StabilityWindowTicks,
+    int FinalScore,
+    string Summary,
+    string NextStep);
+
 public sealed record PrototypeSnapshot(
     int Tick,
     GeneratedWorld World,
@@ -177,6 +199,28 @@ public sealed record PrototypeSnapshot(
 
     public IReadOnlyList<PrototypeNpcPressureView> NpcPressures { get; init; } = [];
 
+    public PrototypeScenarioObjectiveView ScenarioObjective { get; init; } = new(
+        FirstCharterSeason.ScenarioId,
+        FirstCharterSeason.Label,
+        FirstCharterSeason.RulesVersion,
+        CurrentTick: 0,
+        FirstCharterSeason.TickLimit,
+        FirstCharterSeason.InProgress,
+        IsComplete: false,
+        IsWon: false,
+        CurrentCash: 0m,
+        FirstCharterSeason.CashTarget,
+        CompletedCharters: 0,
+        FirstCharterSeason.RequiredCharterDeliveries,
+        DistinctResources: 0,
+        FirstCharterSeason.RequiredDistinctResources,
+        StableNeeds: 0,
+        FirstCharterSeason.RequiredStableNeeds,
+        FirstCharterSeason.StabilityWindowTicks,
+        FinalScore: 0,
+        Summary: "",
+        NextStep: "");
+
     public double UnmetDemandRatio => Prices.Count == 0 ? 0 : Math.Round(Prices.Average(price => Math.Max(0, price.Scarcity)), 4);
 
     public decimal LastTickCashDelta => Ledger.Where(entry => entry.Tick == Tick).Sum(entry => entry.CashDelta);
@@ -197,6 +241,7 @@ public sealed class PrototypeSession
     private CalendarState _calendar = new(1, 1);
     private OpportunityScore _aiChoice = new("none", 0m);
     private string? _selectedContractId;
+    private ScenarioObjectiveSaveState _scenarioObjective = FirstCharterSeason.CreateInitialState(1000m);
 
     private const int MinPolicyStock = 0;
     private const int MaxPolicyStock = 64;
@@ -365,12 +410,13 @@ public sealed class PrototypeSession
         var reservation = ReservationFor(selectedOperation);
 
         var productionCash = RunProduction(nextTick, reservation);
-        var logisticsCash = RunLogistics(nextTick);
+        var logisticsCash = RunLogistics(nextTick, out var routeOperationDispatch);
         var aiCash = RunAi(nextTick);
         RunCityGrowth(nextTick);
 
         var cashDelta = productionCash + logisticsCash + aiCash;
         _company = _company with { Cash = decimal.Round(_company.Cash + cashDelta, 2, MidpointRounding.AwayFromZero) };
+        UpdateScenarioObjective(nextTick, selectedOperation, routeOperationDispatch);
 
         Current = BuildSnapshot(nextTick);
         return Current;
@@ -477,12 +523,13 @@ public sealed class PrototypeSession
         return cash;
     }
 
-    private decimal RunLogistics(int tick)
+    private decimal RunLogistics(int tick, out RouteOperationDispatchResult? routeOperationDispatch)
     {
+        routeOperationDispatch = null;
         var selectedOperation = SelectedActiveRouteOperation();
         if (selectedOperation is not null)
         {
-            return ExecuteRouteOperation(tick, selectedOperation);
+            return ExecuteRouteOperation(tick, selectedOperation, out routeOperationDispatch);
         }
 
         if (_selectedContractId is not null)
@@ -539,8 +586,9 @@ public sealed class PrototypeSession
         return cash;
     }
 
-    private decimal ExecuteRouteOperation(int tick, PrototypeRouteOperationView operation)
+    private decimal ExecuteRouteOperation(int tick, PrototypeRouteOperationView operation, out RouteOperationDispatchResult? dispatch)
     {
+        dispatch = null;
         var route = Routes.FirstOrDefault(route => route.Id == operation.RouteId);
         var source = _cities.FirstOrDefault(city => city.Id == operation.FromNode);
         var destination = _cities.FirstOrDefault(city => city.Id == operation.ToNode);
@@ -557,6 +605,7 @@ public sealed class PrototypeSession
                 $"{route.Id}: route operation paused for {operation.ResourceId}: {operation.PausedReason}",
                 0m,
                 route.Id));
+            dispatch = new RouteOperationDispatchResult(operation.Id, operation.RouteId, operation.ResourceId, Units: 0, Delivered: false);
             return 0m;
         }
 
@@ -572,6 +621,7 @@ public sealed class PrototypeSession
                 $"{route.Id}: route operation paused for {operation.ResourceId}: no exportable stock",
                 0m,
                 route.Id));
+            dispatch = new RouteOperationDispatchResult(operation.Id, operation.RouteId, operation.ResourceId, Units: 0, Delivered: false);
             return 0m;
         }
 
@@ -589,6 +639,7 @@ public sealed class PrototypeSession
             $"{route.Id}: route operation delivered {units} {operation.ResourceId} from {source.Name} to {destination.Name}, served {unmetServed} unmet demand",
             net,
             route.Id));
+        dispatch = new RouteOperationDispatchResult(operation.Id, operation.RouteId, operation.ResourceId, units, Delivered: true);
         return net;
     }
 
@@ -636,6 +687,157 @@ public sealed class PrototypeSession
         }
     }
 
+    private void UpdateScenarioObjective(int tick, PrototypeRouteOperationView? selectedOperation, RouteOperationDispatchResult? dispatch)
+    {
+        if (!string.Equals(_scenarioObjective.EndReason, FirstCharterSeason.InProgress, StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        var completedCharterIds = _scenarioObjective.CompletedCharterIds.ToHashSet(StringComparer.Ordinal);
+        var completedResources = _scenarioObjective.CompletedCharterResourceIds.ToHashSet(StringComparer.Ordinal);
+        if (selectedOperation is not null
+            && dispatch is not null
+            && dispatch.Delivered
+            && dispatch.Units > 0
+            && string.Equals(dispatch.OperationId, selectedOperation.Id, StringComparison.Ordinal)
+            && string.Equals(dispatch.RouteId, selectedOperation.RouteId, StringComparison.Ordinal)
+            && string.Equals(dispatch.ResourceId, selectedOperation.ResourceId, StringComparison.Ordinal))
+        {
+            completedCharterIds.Add($"{tick}:{selectedOperation.Id}");
+            completedResources.Add(selectedOperation.ResourceId);
+        }
+
+        var stableNeedStreaks = UpdateStableNeedStreaks();
+        var stableNeeds = CountStableNeeds(stableNeedStreaks);
+        var endReason = FirstCharterSeason.ResolveEndReason(_company.Cash, tick, completedCharterIds.Count, completedResources.Count, stableNeeds);
+        int? endTick = string.Equals(endReason, FirstCharterSeason.InProgress, StringComparison.Ordinal) ? null : tick;
+
+        var score = FirstCharterSeason.Score(_company.Cash, completedCharterIds.Count, completedResources.Count, stableNeeds);
+        _scenarioObjective = new ScenarioObjectiveSaveState(
+            FirstCharterSeason.ScenarioId,
+            FirstCharterSeason.RulesVersion,
+            StartedTick: 0,
+            tick,
+            endTick,
+            endReason,
+            completedCharterIds.Order(StringComparer.Ordinal).ToArray(),
+            completedResources.Order(StringComparer.Ordinal).ToArray(),
+            stableNeedStreaks,
+            _company.Cash,
+            score);
+
+        if (!string.Equals(endReason, FirstCharterSeason.InProgress, StringComparison.Ordinal))
+        {
+            _ledger.Add(new PrototypeLedgerEntry(
+                tick,
+                "Scenario",
+                $"{FirstCharterSeason.Label}: {ScenarioEndLabel(endReason)}, score {score}/100",
+                0m,
+                FirstCharterSeason.ScenarioId));
+        }
+    }
+
+    private IReadOnlyDictionary<string, int> UpdateStableNeedStreaks()
+    {
+        var stableNeedStreaks = new Dictionary<string, int>(_scenarioObjective.StableNeedStreaks, StringComparer.Ordinal);
+        foreach (var city in _cities.OrderBy(city => city.Id, StringComparer.Ordinal))
+        {
+            foreach (var need in _needs.OrderBy(need => need.ResourceId, StringComparer.Ordinal))
+            {
+                var key = StableNeedKey(city.Id, need.ResourceId);
+                var isStable = city.Market.Get(need.ResourceId) >= ScenarioStableStockThreshold(need);
+                stableNeedStreaks[key] = isStable
+                    ? stableNeedStreaks.GetValueOrDefault(key) + 1
+                    : 0;
+            }
+        }
+
+        return stableNeedStreaks
+            .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+            .ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.Ordinal);
+    }
+
+    private PrototypeScenarioObjectiveView BuildScenarioObjectiveView()
+    {
+        var stableNeeds = CountStableNeeds(_scenarioObjective.StableNeedStreaks);
+        var completedCharters = _scenarioObjective.CompletedCharterIds.Count;
+        var distinctResources = _scenarioObjective.CompletedCharterResourceIds.Count;
+        return new PrototypeScenarioObjectiveView(
+            _scenarioObjective.ScenarioId,
+            FirstCharterSeason.Label,
+            _scenarioObjective.RulesVersion,
+            _scenarioObjective.CurrentTick,
+            FirstCharterSeason.TickLimit,
+            _scenarioObjective.EndReason,
+            !string.Equals(_scenarioObjective.EndReason, FirstCharterSeason.InProgress, StringComparison.Ordinal),
+            string.Equals(_scenarioObjective.EndReason, FirstCharterSeason.Won, StringComparison.Ordinal),
+            _company.Cash,
+            FirstCharterSeason.CashTarget,
+            completedCharters,
+            FirstCharterSeason.RequiredCharterDeliveries,
+            distinctResources,
+            FirstCharterSeason.RequiredDistinctResources,
+            stableNeeds,
+            FirstCharterSeason.RequiredStableNeeds,
+            FirstCharterSeason.StabilityWindowTicks,
+            _scenarioObjective.FinalScore,
+            ScenarioSummary(_scenarioObjective.EndReason, _scenarioObjective.FinalScore),
+            ScenarioNextStep(completedCharters, distinctResources, stableNeeds));
+    }
+
+    private static int CountStableNeeds(IReadOnlyDictionary<string, int> stableNeedStreaks)
+    {
+        return stableNeedStreaks.Count(pair => pair.Value >= FirstCharterSeason.StabilityWindowTicks);
+    }
+
+    private static string StableNeedKey(string cityId, string resourceId)
+    {
+        return $"{cityId}:{resourceId}";
+    }
+
+    private static string ScenarioSummary(string endReason, int score)
+    {
+        return endReason switch
+        {
+            FirstCharterSeason.Won => $"Season won, score {score}/100.",
+            FirstCharterSeason.Bankrupt => $"Season failed: bankrupt, score {score}/100.",
+            FirstCharterSeason.Timeout => $"Season ended after {FirstCharterSeason.TickLimit} ticks, score {score}/100.",
+            _ => "Season in progress."
+        };
+    }
+
+    private static string ScenarioEndLabel(string endReason)
+    {
+        return endReason switch
+        {
+            FirstCharterSeason.Won => "won",
+            FirstCharterSeason.Bankrupt => "bankrupt",
+            FirstCharterSeason.Timeout => "timeout",
+            _ => "in progress"
+        };
+    }
+
+    private static string ScenarioNextStep(int completedCharters, int distinctResources, int stableNeeds)
+    {
+        if (completedCharters < FirstCharterSeason.RequiredCharterDeliveries)
+        {
+            return "Select and run profitable route contracts.";
+        }
+
+        if (distinctResources < FirstCharterSeason.RequiredDistinctResources)
+        {
+            return "Serve a second resource type.";
+        }
+
+        if (stableNeeds < FirstCharterSeason.RequiredStableNeeds)
+        {
+            return "Keep more city needs above reorder point.";
+        }
+
+        return "Build cash above the season target.";
+    }
+
     private PrototypeSnapshot BuildSnapshot(int tick)
     {
         var charter = _cities[0];
@@ -650,6 +852,7 @@ public sealed class PrototypeSession
             : null;
         _selectedContractId = selectedContractId;
         var save = BuildSave(prices, selectedContractId);
+        var scenarioObjective = BuildScenarioObjectiveView();
         var views = _cities
             .OrderBy(city => city.Id, StringComparer.Ordinal)
             .Select(city => new PrototypeCityView(
@@ -687,7 +890,8 @@ public sealed class PrototypeSession
             ActiveRouteOperation = activeOperation,
             RoutePolicies = BuildRoutePolicyViews(),
             ProductionChainOpportunities = productionChains,
-            NpcPressures = npcPressures
+            NpcPressures = npcPressures,
+            ScenarioObjective = scenarioObjective
         };
     }
 
@@ -1415,7 +1619,8 @@ public sealed class PrototypeSession
                     ModeForSave(kvp.Value.Mode)))
                 .ToArray(),
             BuildRouteSavePolicies(),
-            selectedContractId);
+            selectedContractId,
+            _scenarioObjective);
     }
 
     private IReadOnlyList<PrototypeRoutePolicyView> BuildRoutePolicyViews()
@@ -1631,6 +1836,11 @@ public sealed class PrototypeSession
         }
 
         return Math.Max(SafetyStockFor(need) + need.ConsumptionPerTick, (int)Math.Ceiling(need.DesiredStock * 0.50));
+    }
+
+    private static int ScenarioStableStockThreshold(MarketNeed need)
+    {
+        return ReorderPointFor(need);
     }
 
     private static int ConservativeSafetyStockFor(MarketNeed? need)
@@ -1958,6 +2168,8 @@ public sealed class PrototypeSession
     private sealed record WarehousePolicy(int SafetyStock, int ReorderPoint, bool IsOverride, string Mode);
 
     private sealed record RoutePolicy(string RouteId, IReadOnlyList<string> ReservedResources, string? PriorityResourceId);
+
+    private sealed record RouteOperationDispatchResult(string OperationId, string RouteId, string ResourceId, int Units, bool Delivered);
 
     private sealed record ProductionDestination(string CityId, string RouteId, decimal UnitPrice, int ShipmentPriority);
 }

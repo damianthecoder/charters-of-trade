@@ -45,13 +45,17 @@ foreach (var seed in seeds)
         timeToProfit,
         bankrupt,
         snapshot.Company.Cash,
-        snapshot.AiChoice.OpportunityId));
+        snapshot.AiChoice.OpportunityId,
+        snapshot.ScenarioObjective.EndReason,
+        snapshot.ScenarioObjective.FinalScore,
+        snapshot.ScenarioObjective.CompletedCharters,
+        snapshot.ScenarioObjective.StableNeeds));
 }
 
-Console.WriteLine("seed,world_hash,solvency_kernel,route_count,median_route_profit_proxy,unmet_demand_ratio,time_to_profit,bankrupt,cash_after_12,ai_move");
+Console.WriteLine("seed,world_hash,solvency_kernel,route_count,median_route_profit_proxy,unmet_demand_ratio,time_to_profit,bankrupt,cash_after_12,ai_move,scenario_result,scenario_score,scenario_deliveries,scenario_stable_needs");
 foreach (var row in rows)
 {
-    Console.WriteLine($"{row.Seed},{row.WorldHash},{row.HasSolvencyKernel},{row.RouteCount},{row.MedianRouteProfitProxy},{row.UnmetDemandRatio},{row.TimeToProfit},{row.Bankrupt},{row.CashAfter12},{row.AiMove}");
+    Console.WriteLine($"{row.Seed},{row.WorldHash},{row.HasSolvencyKernel},{row.RouteCount},{row.MedianRouteProfitProxy},{row.UnmetDemandRatio},{row.TimeToProfit},{row.Bankrupt},{row.CashAfter12},{row.AiMove},{row.ScenarioResult},{row.ScenarioScore},{row.ScenarioDeliveries},{row.ScenarioStableNeeds}");
 }
 
 var playable = rows.Count(row => row.HasSolvencyKernel);
@@ -60,6 +64,8 @@ Console.WriteLine($"Playable seeds: {playable}/{rows.Count}");
 Console.WriteLine($"Average unmet demand ratio: {rows.Average(row => row.UnmetDemandRatio):0.0000}");
 Console.WriteLine($"Median time to profit: {Median(rows.Where(row => row.TimeToProfit > 0).Select(row => row.TimeToProfit)):0.0}");
 Console.WriteLine($"Bankruptcy frequency: {rows.Count(row => row.Bankrupt)}/{rows.Count}");
+Console.WriteLine($"Average scenario score: {rows.Average(row => row.ScenarioScore):0.0}");
+Console.WriteLine($"Scenario wins/timeouts/bankruptcies: {rows.Count(row => row.ScenarioResult == FirstCharterSeason.Won)}/{rows.Count(row => row.ScenarioResult == FirstCharterSeason.Timeout)}/{rows.Count(row => row.ScenarioResult == FirstCharterSeason.Bankrupt)}");
 
 static double Median(IEnumerable<int> values)
 {
@@ -83,4 +89,8 @@ internal sealed record BenchmarkRow(
     int TimeToProfit,
     bool Bankrupt,
     decimal CashAfter12,
-    string AiMove);
+    string AiMove,
+    string ScenarioResult,
+    int ScenarioScore,
+    int ScenarioDeliveries,
+    int ScenarioStableNeeds);

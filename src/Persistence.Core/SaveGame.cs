@@ -44,6 +44,19 @@ public sealed record RoutePolicySaveState(
     IReadOnlyList<string> ReservedResources,
     string? PriorityResourceId);
 
+public sealed record ScenarioObjectiveSaveState(
+    string ScenarioId,
+    int RulesVersion,
+    int StartedTick,
+    int CurrentTick,
+    int? EndTick,
+    string EndReason,
+    IReadOnlyList<string> CompletedCharterIds,
+    IReadOnlyList<string> CompletedCharterResourceIds,
+    IReadOnlyDictionary<string, int> StableNeedStreaks,
+    decimal FinalCash,
+    int FinalScore);
+
 public sealed record SaveGame(
     int SaveVersion,
     string ContentHash,
@@ -58,11 +71,12 @@ public sealed record SaveGame(
     FogOfWarState FogOfWar,
     IReadOnlyList<WarehousePolicySaveState> WarehousePolicies,
     IReadOnlyList<RoutePolicySaveState> RoutePolicies,
-    string? PendingRouteContractId);
+    string? PendingRouteContractId,
+    ScenarioObjectiveSaveState ScenarioObjective);
 
 public static class SaveCodec
 {
-    public const int CurrentSaveVersion = 2;
+    public const int CurrentSaveVersion = 3;
 
     private static readonly JsonSerializerOptions Options = new()
     {
@@ -118,7 +132,8 @@ public static class SaveCodec
             FogOfWar = save.FogOfWar with
             {
                 DiscoveredNodes = save.FogOfWar.DiscoveredNodes.Order(StringComparer.Ordinal).ToArray()
-            }
+            },
+            ScenarioObjective = NormalizeScenarioObjective(save.ScenarioObjective)
         };
     }
 
@@ -127,6 +142,31 @@ public static class SaveCodec
         return string.Equals(mode, "balanced", StringComparison.Ordinal)
             ? null
             : mode;
+    }
+
+    private static ScenarioObjectiveSaveState NormalizeScenarioObjective(ScenarioObjectiveSaveState objective)
+    {
+        return objective with
+        {
+            ScenarioId = objective.ScenarioId.Trim(),
+            EndReason = objective.EndReason.Trim(),
+            CompletedCharterIds = objective.CompletedCharterIds
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => id.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToArray(),
+            CompletedCharterResourceIds = objective.CompletedCharterResourceIds
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => id.Trim())
+                .Distinct(StringComparer.Ordinal)
+                .Order(StringComparer.Ordinal)
+                .ToArray(),
+            StableNeedStreaks = objective.StableNeedStreaks
+                .Where(pair => !string.IsNullOrWhiteSpace(pair.Key))
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal)
+                .ToDictionary(pair => pair.Key.Trim(), pair => pair.Value, StringComparer.Ordinal)
+        };
     }
 }
 
@@ -284,6 +324,8 @@ public static class SaveValidator
             errors.Add("pendingRouteContractId must not be empty when present");
         }
 
+        ValidateScenarioObjective(save.ScenarioObjective, errors);
+
         if (errors.Count > 0)
         {
             throw new SaveValidationException(errors);
@@ -396,6 +438,133 @@ public static class SaveValidator
             if (!seenRoutes.Contains(routeId))
             {
                 errors.Add($"route policy '{routeId}' must be present for every saved route");
+            }
+        }
+    }
+
+    private static void ValidateScenarioObjective(ScenarioObjectiveSaveState? objective, List<string> errors)
+    {
+        if (objective is null)
+        {
+            errors.Add("scenarioObjective must not be null");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(objective.ScenarioId))
+        {
+            errors.Add("scenarioObjective scenarioId must not be empty");
+        }
+
+        if (objective.RulesVersion <= 0)
+        {
+            errors.Add("scenarioObjective rulesVersion must be positive");
+        }
+
+        if (objective.StartedTick < 0)
+        {
+            errors.Add("scenarioObjective startedTick must not be negative");
+        }
+
+        if (objective.CurrentTick < objective.StartedTick)
+        {
+            errors.Add("scenarioObjective currentTick must not be before startedTick");
+        }
+
+        var validEndReason = string.Equals(objective.EndReason, "in_progress", StringComparison.Ordinal)
+            || string.Equals(objective.EndReason, "won", StringComparison.Ordinal)
+            || string.Equals(objective.EndReason, "bankrupt", StringComparison.Ordinal)
+            || string.Equals(objective.EndReason, "timeout", StringComparison.Ordinal);
+        if (!validEndReason)
+        {
+            errors.Add("scenarioObjective endReason must be in_progress, won, bankrupt, or timeout");
+        }
+
+        if (string.Equals(objective.EndReason, "in_progress", StringComparison.Ordinal) && objective.EndTick is not null)
+        {
+            errors.Add("scenarioObjective endTick must be empty while in progress");
+        }
+
+        if (!string.Equals(objective.EndReason, "in_progress", StringComparison.Ordinal))
+        {
+            if (objective.EndTick is null)
+            {
+                errors.Add("scenarioObjective endTick must be present after completion");
+            }
+            else if (objective.EndTick < objective.StartedTick)
+            {
+                errors.Add("scenarioObjective endTick must not be before startedTick");
+            }
+        }
+
+        ValidateScenarioList("completedCharterIds", objective.CompletedCharterIds, errors);
+        ValidateScenarioList("completedCharterResourceIds", objective.CompletedCharterResourceIds, errors);
+
+        if (objective.StableNeedStreaks is null)
+        {
+            errors.Add("scenarioObjective stableNeedStreaks must not be null");
+        }
+        else
+        {
+            var seenStableNeedKeys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var (key, streak) in objective.StableNeedStreaks)
+            {
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    errors.Add("scenarioObjective stableNeedStreaks key must not be empty");
+                }
+                else
+                {
+                    var trimmed = key.Trim();
+                    if (!string.Equals(key, trimmed, StringComparison.Ordinal))
+                    {
+                        errors.Add($"scenarioObjective stableNeedStreaks '{key}' must not contain surrounding whitespace");
+                    }
+
+                    if (!seenStableNeedKeys.Add(trimmed))
+                    {
+                        errors.Add($"scenarioObjective stableNeedStreaks '{trimmed}' must not be duplicated");
+                    }
+                }
+
+                if (streak < 0)
+                {
+                    errors.Add($"scenarioObjective stableNeedStreaks '{key}' must not be negative");
+                }
+            }
+        }
+
+        if (objective.FinalScore is < 0 or > 100)
+        {
+            errors.Add("scenarioObjective finalScore must be between 0 and 100");
+        }
+    }
+
+    private static void ValidateScenarioList(string name, IReadOnlyList<string>? values, List<string> errors)
+    {
+        if (values is null)
+        {
+            errors.Add($"scenarioObjective {name} must not be null");
+            return;
+        }
+
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var value in values)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                errors.Add($"scenarioObjective {name} entries must not be empty");
+                continue;
+            }
+
+            var trimmed = value.Trim();
+            if (!string.Equals(value, trimmed, StringComparison.Ordinal))
+            {
+                errors.Add($"scenarioObjective {name} '{value}' must not contain surrounding whitespace");
+            }
+
+            if (!seen.Add(trimmed))
+            {
+                errors.Add($"scenarioObjective {name} '{trimmed}' must not be duplicated");
             }
         }
     }

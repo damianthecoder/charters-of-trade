@@ -34,6 +34,7 @@ public partial class BootstrapPanel : Control
     private RichTextLabel? _warnings;
     private RichTextLabel? _productionChains;
     private RichTextLabel? _npcPressure;
+    private RichTextLabel? _scenarioObjective;
     private RichTextLabel? _policy;
     private RichTextLabel? _testProbe;
     private SpinBox? _seedInput;
@@ -185,6 +186,7 @@ public partial class BootstrapPanel : Control
         AddMetric(metricGrid, "Save Hash");
         AddMetric(metricGrid, "NPC Pressure");
         AddMetric(metricGrid, "Unmet Demand");
+        AddMetric(metricGrid, "Season Score");
         sidebar.AddChild(CreateSectionPanel("Company Ledger", metricGrid));
 
         var testStack = CreateSectionStack();
@@ -229,6 +231,11 @@ public partial class BootstrapPanel : Control
         _testProbe.CustomMinimumSize = new Vector2(0, layout.ProbeHeight);
         testStack.AddChild(_testProbe);
         sidebar.AddChild(CreateSectionPanel("System Test Bench", testStack));
+
+        _scenarioObjective = CreateLog();
+        _scenarioObjective.Name = "ScenarioObjectiveLog";
+        _scenarioObjective.CustomMinimumSize = new Vector2(0, 132);
+        sidebar.AddChild(CreateSectionPanel("First Charter Season", _scenarioObjective));
 
         var mapModeStack = CreateSectionStack();
         mapModeStack.AddChild(CreateSectionHint("Routes shows capacity, Profit shows this-tick cash, Demand shows city shortage pressure from local stock and reorder policy."));
@@ -478,6 +485,7 @@ public partial class BootstrapPanel : Control
         SetMetric("Save Hash", ShortHash(_snapshot.SaveHash));
         SetMetric("NPC Pressure", TopNpcPressureMetric());
         SetMetric("Unmet Demand", _snapshot.UnmetDemandRatio.ToString("0.0000", CultureInfo.InvariantCulture));
+        SetMetric("Season Score", $"{_snapshot.ScenarioObjective.FinalScore}/100");
 
         if (_cities is not null)
         {
@@ -495,6 +503,7 @@ public partial class BootstrapPanel : Control
         UpdateWarnings();
         UpdateProductionChains();
         UpdateNpcPressure();
+        UpdateScenarioObjective();
         UpdatePolicyControls();
         UpdateWarehousePolicyControl();
         UpdatePolicyPanel();
@@ -528,6 +537,7 @@ public partial class BootstrapPanel : Control
         _warnings = null;
         _productionChains = null;
         _npcPressure = null;
+        _scenarioObjective = null;
         _policy = null;
         _testProbe = null;
         _seedInput = null;
@@ -1046,6 +1056,39 @@ public partial class BootstrapPanel : Control
         }
     }
 
+    private void UpdateScenarioObjective()
+    {
+        if (_snapshot is null || _scenarioObjective is null)
+        {
+            return;
+        }
+
+        var objective = _snapshot.ScenarioObjective;
+        _scenarioObjective.Clear();
+        _scenarioObjective.AppendText($"{objective.Summary}\n");
+        _scenarioObjective.AppendText($"Tick {objective.CurrentTick}/{objective.TickLimit} | Cash {objective.CurrentCash.ToString("0.00", CultureInfo.InvariantCulture)}/{objective.CashTarget.ToString("0.00", CultureInfo.InvariantCulture)}\n");
+        _scenarioObjective.AppendText($"Deliveries {objective.CompletedCharters}/{objective.RequiredCharters} | Resources {objective.DistinctResources}/{objective.RequiredDistinctResources}\n");
+        _scenarioObjective.AppendText($"Stable needs {objective.StableNeeds}/{objective.RequiredStableNeeds} for {objective.StabilityWindowTicks} ticks\n");
+        _scenarioObjective.AppendText(objective.IsComplete
+            ? $"Result: {ScenarioResultLabel(objective)}\n"
+            : $"Next: {objective.NextStep}\n");
+    }
+
+    private static string ScenarioResultLabel(PrototypeScenarioObjectiveView objective)
+    {
+        if (objective.IsWon)
+        {
+            return $"won, score {objective.FinalScore}/100";
+        }
+
+        return objective.EndReason switch
+        {
+            FirstCharterSeason.Bankrupt => $"bankrupt, score {objective.FinalScore}/100",
+            FirstCharterSeason.Timeout => $"timeout, score {objective.FinalScore}/100",
+            _ => $"ended, score {objective.FinalScore}/100"
+        };
+    }
+
     private void UpdateWarehousePolicyControl()
     {
         if (_snapshot is null
@@ -1456,6 +1499,7 @@ public partial class BootstrapPanel : Control
         _testProbe.AppendText(_snapshot.ActiveRouteOperation is null
             ? "Route Operation: none active\n"
             : $"Route Operation: {OperationBrief(_snapshot.ActiveRouteOperation)}, capacity {_snapshot.ActiveRouteOperation.UsedCapacity}/{_snapshot.ActiveRouteOperation.CapacityPerDay}\n");
+        _testProbe.AppendText($"First Charter Season: {_snapshot.ScenarioObjective.CompletedCharters}/{_snapshot.ScenarioObjective.RequiredCharters} deliveries | stable {_snapshot.ScenarioObjective.StableNeeds}/{_snapshot.ScenarioObjective.RequiredStableNeeds} | score {_snapshot.ScenarioObjective.FinalScore}/100\n");
         _testProbe.AppendText(bestChain is null
             ? "Production Chains: none\n"
             : $"Production Chains: {RecipeLabel(bestChain.RecipeId)} at {bestChain.CityName}, {FormatSignedMoney(bestChain.ExpectedMargin)}, {bestChain.Reason}\n");

@@ -54,14 +54,18 @@ public partial class InteractionSmokeRunner : Control
         var resetSeedButton = FindButton(uiRoot, "Reset Seed");
         var selectContractButton = FindButton(uiRoot, "Select Contract");
         var npcPressureLog = FindRequired<RichTextLabel>(uiRoot, control => string.Equals(control.Name, "NpcPressureLog", StringComparison.Ordinal));
+        var scenarioObjectiveLog = FindRequired<RichTextLabel>(uiRoot, control => string.Equals(control.Name, "ScenarioObjectiveLog", StringComparison.Ordinal));
 
         AssertSmoke(AnyVisibleTextContains(uiRoot, "System Test Bench"), "System Test Bench was not visible.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "First Charter Season"), "Scenario objective panel was not visible.");
+        AssertRichTextContains(uiRoot, "Deliveries", "Stable needs");
         AssertSmoke(AnyVisibleTextContains(uiRoot, "Production Chains"), "Production Chains panel was not visible.");
         AssertRichTextContains(uiRoot, "Top rival pressure:", "North Sea Company");
         AssertSmoke(!runTwelveButton.Disabled, "Run 12 was disabled.");
         AssertSmoke(!resetSeedButton.Disabled, "Reset Seed was disabled.");
         AssertSmoke(GetMetricValue(uiRoot, "Tick") == "0", "Initial tick metric was not zero.");
         AssertControlIntersectsViewport(runTwelveButton, "Run 12");
+        await ScrollControlIntoViewAsync(sidebarScroll, scenarioObjectiveLog, "First Charter Season objective");
         await ScrollControlIntoViewAsync(sidebarScroll, npcPressureLog, "NPC Pressure log");
         await ExerciseSidebarScrollAsync(sidebarScroll);
 

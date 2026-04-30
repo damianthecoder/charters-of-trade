@@ -32,6 +32,11 @@ var tests = new (string Name, Action Run)[]
     ("prototype route operations are deterministic", PrototypeRouteOperationsAreDeterministic),
     ("prototype route operation selection exposes active state", PrototypeRouteOperationSelectionExposesActiveState),
     ("prototype route operation pauses when cargo is blocked", PrototypeRouteOperationPausesWhenCargoIsBlocked),
+    ("prototype scenario objective is deterministic", PrototypeScenarioObjectiveIsDeterministic),
+    ("prototype scenario objective counts selected deliveries", PrototypeScenarioObjectiveCountsSelectedDeliveries),
+    ("first charter season rules can be won", FirstCharterSeasonRulesCanBeWon),
+    ("prototype scenario objective stability ignores lowered policy", PrototypeScenarioObjectiveStabilityIgnoresLoweredPolicy),
+    ("prototype scenario objective times out without charters", PrototypeScenarioObjectiveTimesOutWithoutCharters),
     ("prototype NPC pressure is deterministic", PrototypeNpcPressureIsDeterministic),
     ("prototype NPC pressure ordering is stable", PrototypeNpcPressureOrderingIsStable),
     ("NPC pressure scorer tie-breaks and blocks safely", NpcPressureScorerTieBreaksAndBlocksSafely),
@@ -52,6 +57,8 @@ var tests = new (string Name, Action Run)[]
     ("economy production never creates negative stock", EconomyProductionNeverCreatesNegativeStock),
     ("save-load-save preserves hash", SaveLoadSavePreservesHash),
     ("warehouse policy save-load preserves hash", WarehousePolicySaveLoadPreservesHash),
+    ("scenario objective save-load preserves hash", ScenarioObjectiveSaveLoadPreservesHash),
+    ("scenario objective validation rejects invalid state", ScenarioObjectiveValidationRejectsInvalidState),
     ("route policy save validation rejects orphan priority", RoutePolicySaveValidationRejectsOrphanPriority),
     ("save load rejects negative stock", SaveLoadRejectsNegativeStock),
     ("simulation core projects remain Godot-free", SimulationCoreProjectsRemainGodotFree),
@@ -248,7 +255,7 @@ static void EconomyPricesRespondToStockPressure()
 
 static void PrototypeExposesLocalMarketPressureSignals()
 {
-    var session = new SimulationBridge().CreatePrototypeSession(424242);
+    var session = new SimulationBridge().CreatePrototypeSession(20260429);
     var snapshot = session.Current;
 
     AssertTrue(snapshot.Cities.All(city => city.MarketSignals.Count > 0), "Expected every city to expose market pressure signals.");
@@ -293,7 +300,7 @@ static void PrototypeWarehousePolicyOverridesAreDeterministic()
 
 static void PrototypeWarehousePolicyChangesSaveHash()
 {
-    var session = new SimulationBridge().CreatePrototypeSession(424242);
+    var session = new SimulationBridge().CreatePrototypeSession(20260429);
     var city = session.Current.Cities[0];
     var signal = city.MarketSignals.First(item => item.DesiredStock > 0);
     var initialHash = session.Current.SaveHash;
@@ -774,6 +781,117 @@ static void PrototypeRouteOperationPausesWhenCargoIsBlocked()
         && entry.Message.Contains("blocked cargo", StringComparison.Ordinal)), "Paused operation should explain blocked cargo in the ledger.");
 }
 
+static void PrototypeScenarioObjectiveIsDeterministic()
+{
+    var bridge = new SimulationBridge();
+    var first = bridge.CreatePrototypeSession(20260429);
+    var second = bridge.CreatePrototypeSession(20260429);
+    var contractId = first.Current.AvailableContracts.First().Id;
+
+    AssertTrue(first.SelectRouteContract(contractId), "Expected first session route operation selection to succeed.");
+    AssertTrue(second.SelectRouteContract(contractId), "Expected second session route operation selection to succeed.");
+
+    for (var i = 0; i < FirstCharterSeason.TickLimit; i++)
+    {
+        first.AdvanceTick();
+        second.AdvanceTick();
+    }
+
+    AssertEqual(first.Current.SaveHash, second.Current.SaveHash);
+    AssertEqual(ScenarioObjectiveFingerprint(first.Current.ScenarioObjective), ScenarioObjectiveFingerprint(second.Current.ScenarioObjective));
+    AssertTrue(first.Current.ScenarioObjective.IsComplete, "Scenario should end deterministically at or before the season limit.");
+}
+
+static void PrototypeScenarioObjectiveCountsSelectedDeliveries()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(20260429);
+    var contract = FindContract(session.Current, "Expected seed 20260429 to expose a dispatchable wood route operation.", candidate => candidate.ResourceId == "wood" && candidate.ExpectedNet > 0m);
+    var selectedHash = session.Current.SaveHash;
+
+    AssertTrue(session.SelectRouteContract(contract.Id), "Expected route contract selection to start an operation.");
+    var dispatch = AdvanceUntilRouteOperationDelivery(session, contract.RouteId, contract.ResourceId);
+
+    AssertTrue(dispatch.Snapshot.SaveHash != selectedHash, "Scenario delivery progress should affect the state hash.");
+    AssertEqual(1, dispatch.Snapshot.ScenarioObjective.CompletedCharters);
+    AssertEqual(1, dispatch.Snapshot.ScenarioObjective.DistinctResources);
+    AssertTrue(dispatch.Snapshot.ScenarioObjective.FinalScore > 0, "Scenario objective should expose a live score after progress.");
+
+    AssertTrue(session.SetRouteResourceReservation(contract.RouteId, contract.ResourceId, false), "Expected route policy to block the active operation after the first delivery.");
+    var beforePausedTick = session.Current.ScenarioObjective.CompletedCharters;
+    var paused = session.AdvanceTick();
+    AssertEqual(beforePausedTick, paused.ScenarioObjective.CompletedCharters);
+}
+
+static void FirstCharterSeasonRulesCanBeWon()
+{
+    AssertEqual(
+        FirstCharterSeason.Won,
+        FirstCharterSeason.ResolveEndReason(
+            FirstCharterSeason.CashTarget,
+            FirstCharterSeason.TickLimit,
+            FirstCharterSeason.RequiredCharterDeliveries,
+            FirstCharterSeason.RequiredDistinctResources,
+            FirstCharterSeason.RequiredStableNeeds));
+    AssertEqual(
+        FirstCharterSeason.Bankrupt,
+        FirstCharterSeason.ResolveEndReason(
+            -0.01m,
+            FirstCharterSeason.TickLimit,
+            FirstCharterSeason.RequiredCharterDeliveries,
+            FirstCharterSeason.RequiredDistinctResources,
+            FirstCharterSeason.RequiredStableNeeds));
+    AssertEqual(
+        FirstCharterSeason.Timeout,
+        FirstCharterSeason.ResolveEndReason(
+            FirstCharterSeason.CashTarget,
+            FirstCharterSeason.TickLimit,
+            FirstCharterSeason.RequiredCharterDeliveries - 1,
+            FirstCharterSeason.RequiredDistinctResources,
+            FirstCharterSeason.RequiredStableNeeds));
+}
+
+static void PrototypeScenarioObjectiveStabilityIgnoresLoweredPolicy()
+{
+    var control = new SimulationBridge().CreatePrototypeSession(424242);
+    var lowered = new SimulationBridge().CreatePrototypeSession(424242);
+    var target = lowered.Current.Cities
+        .SelectMany(city => city.MarketSignals.Select(signal => new { City = city, Signal = signal }))
+        .Where(item => item.Signal.DesiredStock > 0 && item.Signal.MarketStock < item.Signal.ReorderPoint)
+        .OrderBy(item => item.City.Id, StringComparer.Ordinal)
+        .ThenBy(item => item.Signal.ResourceId, StringComparer.Ordinal)
+        .FirstOrDefault();
+
+    AssertTrue(target is not null, "Expected at least one need below the default scenario stability threshold.");
+    AssertTrue(lowered.SetWarehousePolicy(target!.City.Id, target.Signal.ResourceId, 0, 0), "Expected low warehouse policy override to apply.");
+
+    for (var i = 0; i < FirstCharterSeason.StabilityWindowTicks; i++)
+    {
+        control.AdvanceTick();
+        lowered.AdvanceTick();
+    }
+
+    AssertEqual(control.Current.ScenarioObjective.StableNeeds, lowered.Current.ScenarioObjective.StableNeeds);
+}
+
+static void PrototypeScenarioObjectiveTimesOutWithoutCharters()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(424242);
+
+    for (var i = 0; i < FirstCharterSeason.TickLimit; i++)
+    {
+        session.AdvanceTick();
+    }
+
+    var objective = session.Current.ScenarioObjective;
+    AssertEqual(FirstCharterSeason.Timeout, objective.EndReason);
+    AssertTrue(objective.IsComplete, "Scenario should be complete after the season limit.");
+    AssertEqual(0, objective.CompletedCharters);
+    AssertTrue(session.Current.Ledger.Any(entry =>
+        entry.Category == "Scenario"
+        && entry.Message.Contains(FirstCharterSeason.Label, StringComparison.Ordinal)
+        && entry.Message.Contains("timeout", StringComparison.Ordinal)), "Scenario timeout should be recorded in the ledger.");
+}
+
 static void PrototypeNpcPressureIsDeterministic()
 {
     var bridge = new SimulationBridge();
@@ -1051,6 +1169,95 @@ static void WarehousePolicySaveLoadPreservesHash()
     }
 }
 
+static void ScenarioObjectiveSaveLoadPreservesHash()
+{
+    var content = GameContentLoader.LoadFromDirectory(ContentPathResolver.FindContentDirectory());
+    var snapshot = new SimulationBridge().CreateNewGame(424242);
+    var routes = RoutePlanner.FromWorld(snapshot.World);
+    var market = StarterScenarioFactory.CreateInitialMarket(content.Resources);
+    var prices = new EconomyTick().CalculatePrices(content.Resources, market, StarterScenarioFactory.CreateNeeds(content.Resources));
+    var save = StarterSaveFactory.Create(424242, snapshot.World.WorldGenVersion, content.ContentHash, snapshot.World.Nodes, routes, content.Resources, market, prices);
+    var progressed = save with
+    {
+        ScenarioObjective = new ScenarioObjectiveSaveState(
+            FirstCharterSeason.ScenarioId,
+            FirstCharterSeason.RulesVersion,
+            StartedTick: 0,
+            CurrentTick: 7,
+            EndTick: null,
+            FirstCharterSeason.InProgress,
+            ["7:route_001:node_001->node_002:grain"],
+            ["grain"],
+            new Dictionary<string, int>(StringComparer.Ordinal)
+            {
+                ["node_001:grain"] = FirstCharterSeason.StabilityWindowTicks
+            },
+            FinalCash: 1135m,
+            FinalScore: 42)
+    };
+
+    var firstHash = SaveCodec.ComputeStateHash(progressed);
+    var loaded = SaveCodec.Deserialize(SaveCodec.Serialize(progressed));
+    var secondHash = SaveCodec.ComputeStateHash(loaded);
+
+    AssertEqual(firstHash, secondHash);
+    AssertTrue(firstHash != SaveCodec.ComputeStateHash(save), "Scenario objective progress should affect state hash.");
+    AssertEqual(FirstCharterSeason.InProgress, loaded.ScenarioObjective.EndReason);
+    AssertEqual(1, loaded.ScenarioObjective.CompletedCharterIds.Count);
+}
+
+static void ScenarioObjectiveValidationRejectsInvalidState()
+{
+    var content = GameContentLoader.LoadFromDirectory(ContentPathResolver.FindContentDirectory());
+    var snapshot = new SimulationBridge().CreateNewGame(424242);
+    var routes = RoutePlanner.FromWorld(snapshot.World);
+    var market = StarterScenarioFactory.CreateInitialMarket(content.Resources);
+    var prices = new EconomyTick().CalculatePrices(content.Resources, market, StarterScenarioFactory.CreateNeeds(content.Resources));
+    var save = StarterSaveFactory.Create(424242, snapshot.World.WorldGenVersion, content.ContentHash, snapshot.World.Nodes, routes, content.Resources, market, prices);
+    var invalid = save with
+    {
+        ScenarioObjective = save.ScenarioObjective with
+        {
+            EndReason = FirstCharterSeason.Won,
+            EndTick = null
+        }
+    };
+
+    try
+    {
+        SaveCodec.Serialize(invalid);
+        throw new InvalidOperationException("Expected save validation to reject an ended scenario without endTick.");
+    }
+    catch (SaveValidationException ex)
+    {
+        AssertTrue(ex.Errors.Any(error => error.Contains("endTick must be present", StringComparison.Ordinal)), "Expected scenario endTick validation error.");
+    }
+
+    var whitespaceInvalid = save with
+    {
+        ScenarioObjective = save.ScenarioObjective with
+        {
+            CompletedCharterIds = [" charter_001"],
+            StableNeedStreaks = new Dictionary<string, int>(StringComparer.Ordinal)
+            {
+                ["node_001:grain"] = 1,
+                ["node_001:grain "] = 1
+            }
+        }
+    };
+
+    try
+    {
+        SaveCodec.Serialize(whitespaceInvalid);
+        throw new InvalidOperationException("Expected save validation to reject scenario ids with surrounding whitespace.");
+    }
+    catch (SaveValidationException ex)
+    {
+        AssertTrue(ex.Errors.Any(error => error.Contains("surrounding whitespace", StringComparison.Ordinal)), "Expected scenario whitespace validation error.");
+        AssertTrue(ex.Errors.Any(error => error.Contains("must not be duplicated", StringComparison.Ordinal)), "Expected trimmed stable need duplicate validation error.");
+    }
+}
+
 static void RoutePolicySaveValidationRejectsOrphanPriority()
 {
     var content = GameContentLoader.LoadFromDirectory(ContentPathResolver.FindContentDirectory());
@@ -1270,6 +1477,24 @@ static string RouteOperationFingerprint(IEnumerable<PrototypeRouteOperationView>
             operation.Status,
             operation.PausedReason,
             operation.PolicyAction)));
+}
+
+static string ScenarioObjectiveFingerprint(PrototypeScenarioObjectiveView objective)
+{
+    return string.Format(
+        CultureInfo.InvariantCulture,
+        "{0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}:{8}:{9:0.00}:{10}",
+        objective.ScenarioId,
+        objective.RulesVersion,
+        objective.CurrentTick,
+        objective.EndReason,
+        objective.CompletedCharters,
+        objective.RequiredCharters,
+        objective.DistinctResources,
+        objective.StableNeeds,
+        objective.FinalScore,
+        objective.CurrentCash,
+        objective.NextStep);
 }
 
 static PrototypeMarketSignal SignalFor(PrototypeSnapshot snapshot, string cityId, string resourceId)
