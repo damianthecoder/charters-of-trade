@@ -417,10 +417,10 @@ public partial class BootstrapPanel : Control
             .OrderByDescending(entry => entry.Tick)
             .Take(4)
             .ToArray();
-        var pricePressure = _snapshot.Prices
+        var pricePressure = city.MarketSignals
             .OrderByDescending(price => price.Scarcity)
             .Take(3)
-            .Select(price => $"{ResourceLabel(price.ResourceId)} {price.Price:0.00}, scarcity {price.Scarcity:0.00}")
+            .Select(signal => $"{ResourceLabel(signal.ResourceId)} {signal.Price:0.00}, stock {signal.MarketStock}/{signal.DesiredStock}, {signal.Reason}")
             .ToArray();
         var routeLines = connectedRoutes
             .Take(4)
@@ -443,7 +443,9 @@ public partial class BootstrapPanel : Control
         _inspector.AppendText(cityContracts.Length > 0
             ? $"Contracts serving city: {cityContracts.Length}; best {ContractBrief(cityContracts[0])}\n"
             : "Contracts serving city: none currently available\n");
-        _inspector.AppendText($"Charter market pressure: {string.Join(", ", pricePressure)}\n");
+        _inspector.AppendText(pricePressure.Length > 0
+            ? $"Local market pressure: {string.Join(", ", pricePressure)}\n"
+            : "Local market pressure: no tracked needs\n");
 
         if (recentLedger.Length > 0)
         {
@@ -526,7 +528,10 @@ public partial class BootstrapPanel : Control
 
         foreach (var city in _snapshot.Cities.Where(city => city.SupplySatisfaction < 0.82).OrderBy(city => city.SupplySatisfaction).Take(2))
         {
-            signals.Add($"! {city.Name}: unmet demand, supply {city.SupplySatisfaction:0.00}");
+            var pressure = TopPressureSignal(city);
+            signals.Add(pressure is null
+                ? $"! {city.Name}: unmet demand, supply {city.SupplySatisfaction:0.00}"
+                : $"! {city.Name}: {ResourceLabel(pressure.ResourceId)} {pressure.MarketStock}/{pressure.DesiredStock}, {pressure.Reason}");
         }
 
         foreach (var route in _snapshot.Routes
@@ -745,7 +750,7 @@ public partial class BootstrapPanel : Control
             return "unknown";
         }
 
-        return $"{from.Name} warehouse {StockUnits(from.CompanyWarehouse)}, unmet {SupplyPressure(from):0.00}; {to.Name} warehouse {StockUnits(to.CompanyWarehouse)}, unmet {SupplyPressure(to):0.00}";
+        return $"{from.Name} {CityPressureSummary(from)}; {to.Name} {CityPressureSummary(to)}";
     }
 
     private void UpdateContractControl()
@@ -1047,6 +1052,23 @@ public partial class BootstrapPanel : Control
     private string CityKindFor(string cityId)
     {
         return _snapshot?.World.Nodes.FirstOrDefault(node => node.Id == cityId)?.Kind ?? "market_town";
+    }
+
+    private PrototypeMarketSignal? TopPressureSignal(PrototypeCityView city)
+    {
+        return city.MarketSignals
+            .Where(signal => signal.DesiredStock > 0 && signal.Scarcity > 0.10)
+            .OrderByDescending(signal => signal.Scarcity)
+            .ThenBy(signal => signal.ResourceId, StringComparer.Ordinal)
+            .FirstOrDefault();
+    }
+
+    private string CityPressureSummary(PrototypeCityView city)
+    {
+        var pressure = TopPressureSignal(city);
+        return pressure is null
+            ? $"stable demand, warehouse {StockUnits(city.CompanyWarehouse)}"
+            : $"{ResourceLabel(pressure.ResourceId)} {pressure.MarketStock}/{pressure.DesiredStock}, unmet {SupplyPressure(city):0.00}";
     }
 
     private static double SupplyPressure(PrototypeCityView city)

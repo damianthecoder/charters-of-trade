@@ -17,7 +17,18 @@ public sealed record PrototypeCityView(
     int Population,
     double SupplySatisfaction,
     IReadOnlyDictionary<string, int> MarketStock,
-    IReadOnlyDictionary<string, int> CompanyWarehouse);
+    IReadOnlyDictionary<string, int> CompanyWarehouse,
+    IReadOnlyList<PrototypeMarketSignal> MarketSignals);
+
+public sealed record PrototypeMarketSignal(
+    string ResourceId,
+    decimal Price,
+    double Scarcity,
+    int MarketStock,
+    int WarehouseStock,
+    int DesiredStock,
+    int ConsumptionPerTick,
+    string Reason);
 
 public sealed record PrototypeLedgerEntry(
     int Tick,
@@ -206,6 +217,7 @@ public sealed class PrototypeSession
                 }
             }
 
+            cityCash = RoundMoney(cityCash);
             cash += cityCash;
             _ledger.Add(new PrototypeLedgerEntry(tick, "Production", $"{city.Name}: {producedIds.Count} recipes produced", cityCash, city.Id));
         }
@@ -347,7 +359,8 @@ public sealed class PrototypeSession
                 city.Population.Total,
                 city.SupplySatisfaction,
                 city.Market.ToDictionary(),
-                city.CompanyWarehouse.ToDictionary()))
+                city.CompanyWarehouse.ToDictionary(),
+                BuildMarketSignals(city)))
             .ToArray();
 
         return new PrototypeSnapshot(
@@ -416,6 +429,44 @@ public sealed class PrototypeSession
         return contracts
             .OrderByDescending(contract => contract.ExpectedNet)
             .ThenBy(contract => contract.Id, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private IReadOnlyList<PrototypeMarketSignal> BuildMarketSignals(RuntimeCity city)
+    {
+        var needsByResource = _needs.ToDictionary(need => need.ResourceId, StringComparer.Ordinal);
+        var prices = _economy
+            .CalculatePrices(_content.Resources, city.Market, _needs)
+            .ToDictionary(price => price.ResourceId, price => price, StringComparer.Ordinal);
+        var signals = new List<PrototypeMarketSignal>();
+
+        foreach (var resource in _content.Resources.OrderBy(resource => resource.Id, StringComparer.Ordinal))
+        {
+            needsByResource.TryGetValue(resource.Id, out var need);
+            var marketStock = city.Market.Get(resource.Id);
+            var warehouseStock = city.CompanyWarehouse.Get(resource.Id);
+            if (need is null && marketStock == 0 && warehouseStock == 0)
+            {
+                continue;
+            }
+
+            prices.TryGetValue(resource.Id, out var price);
+            var desiredStock = Math.Max(0, need?.DesiredStock ?? 0);
+            var consumption = Math.Max(0, need?.ConsumptionPerTick ?? 0);
+            signals.Add(new PrototypeMarketSignal(
+                resource.Id,
+                price?.Price ?? resource.BasePrice,
+                price?.Scarcity ?? 0,
+                marketStock,
+                warehouseStock,
+                desiredStock,
+                consumption,
+                MarketReason(marketStock, warehouseStock, desiredStock, consumption, price?.Scarcity ?? 0)));
+        }
+
+        return signals
+            .OrderByDescending(signal => signal.Scarcity)
+            .ThenBy(signal => signal.ResourceId, StringComparer.Ordinal)
             .ToArray();
     }
 
@@ -584,6 +635,43 @@ public sealed class PrototypeSession
     private static string Signed(int value)
     {
         return value >= 0 ? $"+{value}" : value.ToString();
+    }
+
+    private static decimal RoundMoney(decimal value)
+    {
+        return decimal.Round(value, 2, MidpointRounding.AwayFromZero);
+    }
+
+    private static string MarketReason(int marketStock, int warehouseStock, int desiredStock, int consumptionPerTick, double scarcity)
+    {
+        if (desiredStock <= 0)
+        {
+            return warehouseStock > 0 ? "export stock only" : "nonessential";
+        }
+
+        if (marketStock <= 0)
+        {
+            return warehouseStock > 0
+                ? $"stockout; {warehouseStock} held in company warehouse"
+                : "stockout; no local buffer";
+        }
+
+        if (consumptionPerTick > 0 && marketStock < consumptionPerTick)
+        {
+            return $"critical; less than one tick of demand";
+        }
+
+        if (marketStock < desiredStock)
+        {
+            return $"short {desiredStock - marketStock} vs target";
+        }
+
+        if (scarcity <= -0.35)
+        {
+            return "surplus; export candidate";
+        }
+
+        return "stable";
     }
 
     private sealed class RuntimeCity(

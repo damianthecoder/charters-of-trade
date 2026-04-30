@@ -2,7 +2,7 @@
 
 ## Current Goal
 
-Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice: deterministic route contracts are integrated with the visual UX map modes, route contract controls are clearer, and the Godot test path now includes interaction smoke coverage for map-mode clicks, city/route selection, tick controls, contract selection, and post-interaction UI content. Windows Godot/.NET verification now passes after stabilizing the smoke runner; the next step is committing/pushing the verified branch and opening the integrated branch PR.
+Build the next P0 vertical-slice layer on top of merged route contracts: the `agent/economy-depth-pass` branch starts from synced `origin/main` and adds first-pass economy depth through stronger local price pressure, per-city market signals, visible shortage reasons, and Godot inspector/warning copy that explains what each city lacks. The next step is to continue from this synced branch into logistics/warehouse policies.
 
 ## Latest Decisions
 
@@ -24,6 +24,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - Visual direction starts with Ledger Cartography: historical map and merchant ledger materiality combined with modern flow-map readability. Territory remains quiet; routes, markets, margins, capacity, and supply pressure are the main visual language.
 - Visual selection, hover, animation, map modes, colors, contract UI placeholders, and inspector state belong in the Godot presentation layer. They must not leak into the deterministic core or save format.
 - Git is the project coordination baseline. Work should branch from `main`, keep generated Godot/.NET caches ignored, and use commits/checkpoints to make parallel agent work reviewable. The GitHub remote is `origin` at `https://github.com/damianthecoder/charters-of-trade.git`.
+- Each development phase starts by syncing local `main` from `origin/main`, creating a focused feature branch, and ends by running verification, committing, pushing to GitHub, and confirming the remote branch head.
 - Route contract selection is gameplay state, not transient UI state. Pending selected contracts are included in `SaveGame.PendingRouteContractId` and therefore in the state hash.
 - `tools/test.ps1` uses the normal solution build plus the Godot interaction smoke scene. The separate Godot `--build-solutions --quit` step was removed because it hung and produced a Godot crash dialog in this workspace.
 - Cross-agent branch status: `origin/agent/visual-ux-map-modes` commit `ac44fb6` has been merged into the route-contract work. The integrated Godot UI now uses typed `AvailableContracts`, `SelectedContractId`, and `SelectRouteContract` instead of the visual branch's temporary reflection/placeholder bridge path.
@@ -31,13 +32,13 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 ## System State
 
 - `WorldGen.Core`: deterministic seedable world generation, raster summary, settlement nodes, route candidates, world hash, solvency kernel.
-- `Economy.Core`: resource and recipe definitions, inventory, market pricing, basic production tick.
+- `Economy.Core`: resource and recipe definitions, inventory, stock-pressure-aware market pricing, basic production tick.
 - `Logistics.Core`: routes, capacities, lead time, route profitability.
 - `CitySim.Core`: cohort population, city stock, workforce, simple growth signals.
 - `AI.Company`: utility scorer for expansion/trade opportunities.
 - `Persistence.Core`: save game DTOs, JSON serialization, save validation, stable state hash, and pending route contract id support.
 - `Content.Core`: JSON content loader, validation, and canonical content hash for P0 resources/recipes.
-- `GodotBridge`: dependency-free bridge facade plus `PrototypeSession`, which runs a deterministic P0 loop across content, world, economy, logistics, route contracts, city growth, AI, and persistence hashing.
+- `GodotBridge`: dependency-free bridge facade plus `PrototypeSession`, which runs a deterministic P0 loop across content, world, economy, logistics, route contracts, city growth, AI, persistence hashing, and per-city market pressure signals.
 - `ChartersOfTrade.Godot`: Godot .NET project with a `Main.tscn` prototype shell driven by `BootstrapPanel.cs`; it renders terrain, settlement nodes, route lines, KPI metrics, city summary, ledger, tick controls, city/route selection, hover states, route cash labels, animated route pulses, supply rings, route/city warning marks, city type stamps, Routes/Profit/Demand map modes, polished route contract controls, priority signals, and a contextual inspector. `InteractionSmoke.tscn` loads the real scene and exercises expected user actions headlessly.
 - `Tests`: custom console test runner for determinism, terrain-sensitive world hashes, content validation, prototype ticks, route contracts, declared consumption, save validation, save/load, economy, AI, and Godot interaction smoke; latest Windows run passed 18/18 plus `INTERACTION_SMOKE PASS`.
 - `Benchmarks`: console runner reporting seed-level playability metrics plus time-to-profit, bankruptcy frequency, post-run cash, AI move, and unmet demand.
@@ -79,6 +80,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - Stabilized the integrated route contract UX: contract dropdown labels now show rank, city names, resource labels, and signed net values; summaries distinguish selected, best, preview, empty, and stale contract states; city/route inspectors explain contract context more directly.
 - Added Godot interaction smoke tooling in `InteractionSmokeRunner.cs` and `InteractionSmoke.tscn`; `tools/test.ps1` now runs this smoke path instead of only starting `Main.tscn`.
 - Stabilized Windows interaction smoke after verification: increased the Godot frame budget, read `RichTextLabel.GetParsedText()` for appended inspector text, and used a headless-safe post-interaction UI assertion instead of sampling a dummy viewport texture.
+- Economy depth pass started on `agent/economy-depth-pass` from synced `origin/main`: local prices now react to stockout, near-term coverage, surplus, and perishability; `PrototypeCityView` exposes `PrototypeMarketSignal`; Godot city/route inspectors and priority signals show local shortage reasons instead of only charter-town pressure.
 
 ## Tests
 
@@ -89,6 +91,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - Integrated branch benchmark after review fixes: `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.6967, median time to profit 1.0, bankruptcy frequency 0/25 after 12 ticks.
 - Visual smoke capture passed with Godot movie maker at `artifacts/godot-smoke/visual-smoke00000002.png`; the rendered frame is nonblank, shows Routes/Profit/Demand buttons, city stamps, routes, KPIs, and an active route contract dropdown.
 - Windows verification after smoke stabilization: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 18/18 tests and `INTERACTION_SMOKE PASS`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.6967, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
+- Economy depth branch verification: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 20/20 tests and `INTERACTION_SMOKE PASS`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.6967, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 
 ## Risks
 
@@ -106,6 +109,7 @@ Turn the visible Godot 4.x .NET prototype into an interactive P0 vertical slice:
 - `SaveGame.PendingRouteContractId` is a prototype save v1 extension; future save migrations should formalize command/contract state.
 - Godot `--build-solutions --quit` can hang/crash in this workspace; do not re-add it to the test script unless the underlying Godot CLI issue is understood.
 - Godot CLI smoke may need to run outside sandboxed Codex sessions because Godot writes editor/runtime logs under `user://`.
+
 ## Next Step
 
-Commit/push the Windows-verified smoke stabilization on `agent/route-contract-system`, then open the PR to `main`.
+Continue the economy track with logistics/warehouse policies: reorder points, safety stock, route reservation priorities, and clearer warehouse pressure overlays.
