@@ -25,6 +25,8 @@ var tests = new (string Name, Action Run)[]
     ("prototype consumption uses declared market needs", PrototypeConsumptionUsesDeclaredMarketNeeds),
     ("economy prices respond to stock pressure", EconomyPricesRespondToStockPressure),
     ("prototype exposes local market pressure signals", PrototypeExposesLocalMarketPressureSignals),
+    ("prototype warehouse policies expose safety stock", PrototypeWarehousePoliciesExposeSafetyStock),
+    ("prototype route contracts follow shipment priority", PrototypeRouteContractsFollowShipmentPriority),
     ("economy production never creates negative stock", EconomyProductionNeverCreatesNegativeStock),
     ("save-load-save preserves hash", SaveLoadSavePreservesHash),
     ("save load rejects negative stock", SaveLoadRejectsNegativeStock),
@@ -167,6 +169,33 @@ static void PrototypeExposesLocalMarketPressureSignals()
     AssertTrue(snapshot.Cities.All(city => city.MarketSignals.Count > 0), "Expected every city to expose market pressure signals.");
     AssertTrue(snapshot.Cities.Any(city => city.MarketSignals.Any(signal => signal.WarehouseStock > 0)), "Expected signals to include company warehouse stock.");
     AssertTrue(snapshot.Cities.Any(city => city.MarketSignals.Any(signal => signal.Reason.Contains("short", StringComparison.Ordinal) || signal.Reason.Contains("stockout", StringComparison.Ordinal))), "Expected at least one visible shortage reason.");
+}
+
+static void PrototypeWarehousePoliciesExposeSafetyStock()
+{
+    var snapshot = new SimulationBridge().CreatePrototypeSession(424242).Current;
+    var trackedSignals = snapshot.Cities.SelectMany(city => city.MarketSignals).Where(signal => signal.DesiredStock > 0).ToArray();
+
+    AssertTrue(trackedSignals.All(signal => signal.SafetyStock > 0), "Tracked needs should expose positive safety stock.");
+    AssertTrue(trackedSignals.All(signal => signal.ReorderPoint >= signal.SafetyStock), "Reorder points should not sit below safety stock.");
+    AssertTrue(trackedSignals.Any(signal => signal.ShipmentPriority > 0), "Expected at least one market signal to request shipment priority.");
+    AssertTrue(trackedSignals.Any(signal => signal.PolicyAction.Contains("reorder", StringComparison.Ordinal) || signal.PolicyAction.Contains("shipment", StringComparison.Ordinal) || signal.PolicyAction.Contains("top up", StringComparison.Ordinal)), "Expected policy actions to explain shipment decisions.");
+}
+
+static void PrototypeRouteContractsFollowShipmentPriority()
+{
+    var snapshot = new SimulationBridge().CreatePrototypeSession(424242).Current;
+    AssertTrue(snapshot.AvailableContracts.Count > 1, "Expected multiple route contracts to compare.");
+
+    for (var i = 1; i < snapshot.AvailableContracts.Count; i++)
+    {
+        var previous = snapshot.AvailableContracts[i - 1];
+        var current = snapshot.AvailableContracts[i];
+        AssertTrue(previous.ShipmentPriority >= current.ShipmentPriority, "Route contracts should be ordered by shipment priority first.");
+        AssertTrue(previous.Units > 0 && current.Units > 0, "Route contracts should expose positive reserved units.");
+    }
+
+    AssertTrue(snapshot.AvailableContracts.Any(contract => contract.PolicyAction.Length > 0), "Contracts should carry visible policy actions.");
 }
 
 static void P0ContentLoadsAndValidates()
@@ -417,7 +446,7 @@ static string ContractFingerprint(IEnumerable<PrototypeRouteContractView> contra
     return string.Join("|", contracts.Select(contract =>
         string.Format(
             CultureInfo.InvariantCulture,
-            "{0}:{1}:{2}->{3}:{4}:{5:0.00}:{6:0.00}:{7:0.00}:{8}",
+            "{0}:{1}:{2}->{3}:{4}:{5:0.00}:{6:0.00}:{7:0.00}:{8}:{9}:{10}:{11}",
             contract.Id,
             contract.RouteId,
             contract.FromNode,
@@ -426,5 +455,8 @@ static string ContractFingerprint(IEnumerable<PrototypeRouteContractView> contra
             contract.ExpectedRevenue,
             contract.TransportCost,
             contract.ExpectedNet,
-            contract.CapacityPerDay)));
+            contract.CapacityPerDay,
+            contract.Units,
+            contract.ShipmentPriority,
+            contract.PolicyAction)));
 }
