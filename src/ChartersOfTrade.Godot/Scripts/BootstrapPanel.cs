@@ -111,9 +111,18 @@ public partial class BootstrapPanel : Control
         {
             SizeFlagsHorizontal = SizeFlags.ShrinkEnd,
             SizeFlagsVertical = SizeFlags.ExpandFill,
-            CustomMinimumSize = new Vector2(layout.SidebarWidth, layout.MapMinimum.Y),
+            CustomMinimumSize = new Vector2(layout.SidebarWidth + 22, layout.MapMinimum.Y),
             HorizontalScrollMode = ScrollContainer.ScrollMode.Disabled
         };
+
+        var sidebarInset = new MarginContainer
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            SizeFlagsVertical = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(layout.SidebarWidth, 0)
+        };
+        sidebarInset.AddThemeConstantOverride("margin_right", 24);
+        sidebarScroll.AddChild(sidebarInset);
 
         var sidebar = new VBoxContainer
         {
@@ -122,8 +131,8 @@ public partial class BootstrapPanel : Control
             CustomMinimumSize = new Vector2(layout.SidebarWidth, 0)
         };
         sidebar.AddThemeConstantOverride("separation", 12);
-        sidebarScroll.AddChild(sidebar);
-        root.AddChild(WrapPanel(sidebarScroll, horizontalExpand: false, minimumWidth: layout.SidebarWidth + 34));
+        sidebarInset.AddChild(sidebar);
+        root.AddChild(WrapPanel(sidebarScroll, horizontalExpand: false, minimumWidth: layout.SidebarWidth + 58));
 
         sidebar.AddChild(CreateTitle("Charters of Trade"));
         sidebar.AddChild(CreateMutedLabel("Prototype systems loop"));

@@ -89,7 +89,7 @@ Build the next P0 vertical-slice layer as a player-facing test harness: `agent/g
 - Visual readability pass started on `agent/visual-readability-pass` from synced `agent/full-hd-test-ui`: GPT Image produced a UI direction mockup; `BootstrapPanel.cs` now gives the map a fixed primary share of Full HD, labels explanations by working systems (`Company Ledger`, `Market Pressure`, `Warehouse Policy`, `Route Contract`), caches terrain lookup for coast rendering, and uses cleaner route/city labels for visual testing.
 - World generation now uses coherent deterministic value-noise terrain fields, records `WorldGenVersion` `0.2.0`, enforces readable settlement spacing for P0 configs, places ports only on coast-adjacent land, and limits coastal route mode to port-to-port edges.
 - Added `ADR-0005-coherent-worldgen-fields.md`; `tools/visual-smoke.ps1` now provides non-headless Full HD render verification and is called by `tools/test.ps1` unless `COT_SKIP_VISUAL_SMOKE=1`.
-- Graphic polish pass started on `agent/graphic-polish-pass` from synced Full HD work: `BootstrapPanel.cs` now uses sectioned sidebar cards, styled buttons, larger log text, a map title/HUD strip, left map-mode rail, richer deterministic terrain detail, route outlines/arrows, and collision-aware city labels. Review feedback fixed Event Ledger panel sizing and duplicate hover labels.
+- Graphic polish pass started on `agent/graphic-polish-pass` from synced Full HD work: `BootstrapPanel.cs` now uses sectioned sidebar cards, styled buttons, larger log text, a map title/HUD strip, left map-mode rail, richer deterministic terrain detail, route outlines/arrows, and collision-aware city labels. Review feedback fixed Event Ledger panel sizing, duplicate hover labels, and added a right gutter so the sidebar scrollbar does not crowd text.
 
 ## Tests
 
@@ -104,7 +104,7 @@ Build the next P0 vertical-slice layer as a player-facing test harness: `agent/g
 - Logistics/warehouse policy branch verification: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 22/22 tests and `INTERACTION_SMOKE PASS`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7055, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 - Full HD test UI verification: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 22/22 tests and `INTERACTION_SMOKE PASS` at tick 18; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7055, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks. Godot movie writer produced a confirmed 1920x1080 control frame at `artifacts/godot-smoke/full-hd-test-ui00000035.png`.
 - Visual readability verification after review fixes: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 25/25 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-03483900000002.png`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
-- Graphic polish verification after review fixes and merge with `origin/main`: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 25/25 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-04072400000002.png`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
+- Graphic polish verification after review fixes and merge with `origin/main`: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 25/25 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-04104500000002.png`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 
 ## Risks
 
@@ -124,6 +124,7 @@ Build the next P0 vertical-slice layer as a player-facing test harness: `agent/g
 - Godot `--build-solutions --quit` can hang/crash in this workspace; do not re-add it to the test script unless the underlying Godot CLI issue is understood.
 - Godot CLI smoke may need to run outside sandboxed Codex sessions because Godot writes editor/runtime logs under `user://`.
 - Map-label placement is still a simple local collision pass; future larger maps may need a dedicated label layout/cache layer.
+- Stale Godot debug windows can continue showing older compiled UI after branch/build changes; when visual changes do not appear, close existing Godot processes and relaunch from the current checkout.
 
 ## Next Step
 

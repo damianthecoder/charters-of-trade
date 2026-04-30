@@ -9,6 +9,7 @@ Continued from synced Full HD/visual readability work onto `agent/graphic-polish
 - `ChartersOfTrade.Godot`: wrapped sidebar systems in section panels for Company Ledger, System Test Bench, Map Mode, Route Contract, Inspector, Market Pressure, Warehouse Policy, City Network, and Event Ledger.
 - `ChartersOfTrade.Godot`: adjusted Full HD layout widths so the map remains primary while the right panel has enough room for readable explanations and controls.
 - `ChartersOfTrade.Godot`: added styled buttons, larger log text, section accents, and a minimum/expand behavior for the Event Ledger panel.
+- `ChartersOfTrade.Godot`: added a dedicated right gutter inside the scrollable sidebar so the scrollbar does not crowd or overlap panel text.
 - `ChartersOfTrade.Godot`: replaced the old map banner/legend with a top map HUD and left map-mode rail.
 - `ChartersOfTrade.Godot`: enriched terrain visuals with deterministic water strokes, ridge marks, grove marks, and subtler grid lines.
 - `ChartersOfTrade.Godot`: improved route readability with dark outlines, directional arrows, and existing animated pulses.
@@ -16,7 +17,7 @@ Continued from synced Full HD/visual readability work onto `agent/graphic-polish
 
 ## Tests
 
-- `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1`: passed after merging `origin/main` with 25/25 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`; produced `artifacts/godot-smoke/visual-smoke-20260430-04072400000002.png` at 1920x1080.
+- `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1`: passed after merging `origin/main` with 25/25 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`; produced `artifacts/godot-smoke/visual-smoke-20260430-04104500000002.png` at 1920x1080.
 - `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1`: passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 
 ## Review Notes
@@ -24,12 +25,14 @@ Continued from synced Full HD/visual readability work onto `agent/graphic-polish
 - Delegated Godot UI review found no blockers and no architecture violation; the diff stayed confined to the Godot presentation file.
 - Fixed the P2 Event Ledger sizing note by letting the Event Ledger section expand vertically and giving it a minimum height.
 - Fixed the P3 hover-label readability note by suppressing the extra hover label when the active mode already labels the hovered city.
+- Follow-up review found no blockers for the sidebar gutter change; interaction smoke still covers the first `ScrollContainer` and Full HD map sizing remains within the smoke guard.
 
 ## Risks
 
 - The UI is still a prototype systems test harness, not final art direction.
 - Map labels use a simple local collision pass; larger maps may need a cached label layout pass.
 - The map still redraws every frame for route pulse animation.
+- Existing Godot debug windows may keep showing older compiled UI; close stale Godot processes and relaunch from the current checkout when visual changes do not appear.
 
 ## Next Step
 
