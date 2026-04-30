@@ -33,6 +33,7 @@ public partial class BootstrapPanel : Control
     private RichTextLabel? _inspector;
     private RichTextLabel? _warnings;
     private RichTextLabel? _productionChains;
+    private RichTextLabel? _npcPressure;
     private RichTextLabel? _policy;
     private RichTextLabel? _testProbe;
     private SpinBox? _seedInput;
@@ -182,7 +183,7 @@ public partial class BootstrapPanel : Control
         AddMetric(metricGrid, "Cash");
         AddMetric(metricGrid, "Cashflow");
         AddMetric(metricGrid, "Save Hash");
-        AddMetric(metricGrid, "AI Move");
+        AddMetric(metricGrid, "NPC Pressure");
         AddMetric(metricGrid, "Unmet Demand");
         sidebar.AddChild(CreateSectionPanel("Company Ledger", metricGrid));
 
@@ -242,6 +243,11 @@ public partial class BootstrapPanel : Control
         _productionChains = CreateLog();
         _productionChains.CustomMinimumSize = new Vector2(0, layout.WarningHeight);
         sidebar.AddChild(CreateSectionPanel("Production Chains", _productionChains));
+
+        _npcPressure = CreateLog();
+        _npcPressure.Name = "NpcPressureLog";
+        _npcPressure.CustomMinimumSize = new Vector2(0, layout.WarningHeight);
+        sidebar.AddChild(CreateSectionPanel("NPC Pressure", _npcPressure));
 
         var contractStack = CreateSectionStack();
         contractStack.AddChild(CreateSectionHint("Contracts are concrete logistics orders: source warehouse stock, destination demand, capacity, transport cost, and expected net."));
@@ -470,7 +476,7 @@ public partial class BootstrapPanel : Control
         SetMetric("Cash", _snapshot.Company.Cash.ToString("0.00", CultureInfo.InvariantCulture));
         SetMetric("Cashflow", _snapshot.LastTickCashDelta.ToString("+0.00;-0.00;0.00", CultureInfo.InvariantCulture));
         SetMetric("Save Hash", ShortHash(_snapshot.SaveHash));
-        SetMetric("AI Move", _snapshot.AiChoice.OpportunityId);
+        SetMetric("NPC Pressure", TopNpcPressureMetric());
         SetMetric("Unmet Demand", _snapshot.UnmetDemandRatio.ToString("0.0000", CultureInfo.InvariantCulture));
 
         if (_cities is not null)
@@ -488,6 +494,7 @@ public partial class BootstrapPanel : Control
         UpdateRoutePolicyControl();
         UpdateWarnings();
         UpdateProductionChains();
+        UpdateNpcPressure();
         UpdatePolicyControls();
         UpdateWarehousePolicyControl();
         UpdatePolicyPanel();
@@ -520,6 +527,7 @@ public partial class BootstrapPanel : Control
         _inspector = null;
         _warnings = null;
         _productionChains = null;
+        _npcPressure = null;
         _policy = null;
         _testProbe = null;
         _seedInput = null;
@@ -787,6 +795,9 @@ public partial class BootstrapPanel : Control
             .Where(contract => contract.FromNode == city.Id || contract.ToNode == city.Id)
             .ToArray();
         var topChain = TopProductionChainForCity(city.Id);
+        var topNpcPressure = _snapshot.NpcPressures
+            .Where(pressure => string.Equals(pressure.CityId, city.Id, StringComparison.Ordinal))
+            .FirstOrDefault();
 
         _inspector.AppendText($"{city.Name} ({CityKindLabel(CityKindFor(city.Id))})\n");
         _inspector.AppendText($"Population {city.Population} | level {city.Level}\n");
@@ -803,6 +814,9 @@ public partial class BootstrapPanel : Control
         _inspector.AppendText(topChain is null
             ? "Production Chains: none currently available\n"
             : $"Top chain: {ProductionChainLine(topChain)}\n");
+        _inspector.AppendText(topNpcPressure is null
+            ? "NPC Pressure: none focused on this city\n"
+            : $"NPC Pressure: {NpcPressureLine(topNpcPressure)}\n");
         _inspector.AppendText(pricePressure.Length > 0
             ? $"Warehouse Policy: {string.Join(", ", pricePressure)}\n"
             : "Local market pressure: no tracked needs\n");
@@ -844,6 +858,9 @@ public partial class BootstrapPanel : Control
         var activeOperation = _snapshot.ActiveRouteOperation is not null && _snapshot.ActiveRouteOperation.RouteId == route.Id
             ? _snapshot.ActiveRouteOperation
             : null;
+        var topNpcPressure = _snapshot.NpcPressures
+            .Where(pressure => string.Equals(pressure.RouteId, route.Id, StringComparison.Ordinal))
+            .FirstOrDefault();
 
         _inspector.AppendText($"Route {route.Id}\n");
         _inspector.AppendText($"{from?.Name ?? route.FromNode} -> {to?.Name ?? route.ToNode} | {route.Mode}\n");
@@ -866,6 +883,10 @@ public partial class BootstrapPanel : Control
         {
             _inspector.AppendText("Contracts: none currently available for this route\n");
         }
+
+        _inspector.AppendText(topNpcPressure is null
+            ? "NPC Pressure: none focused on this route\n"
+            : $"NPC Pressure: {NpcPressureLine(topNpcPressure)}\n");
 
         if (recentLedger.Length == 0)
         {
@@ -994,6 +1015,35 @@ public partial class BootstrapPanel : Control
     {
         return _snapshot?.ProductionChainOpportunities
             .FirstOrDefault(chain => string.Equals(chain.CityId, cityId, StringComparison.Ordinal));
+    }
+
+    private void UpdateNpcPressure()
+    {
+        if (_snapshot is null || _npcPressure is null)
+        {
+            return;
+        }
+
+        _npcPressure.Clear();
+        var pressures = _snapshot.NpcPressures
+            .Where(pressure => _selectedCityId is null || string.Equals(pressure.CityId, _selectedCityId, StringComparison.Ordinal))
+            .Where(pressure => _selectedRouteId is null || string.Equals(pressure.RouteId, _selectedRouteId, StringComparison.Ordinal))
+            .Take(5)
+            .ToArray();
+
+        if (pressures.Length == 0)
+        {
+            _npcPressure.AppendText("No rival pressure on the current selection.\n");
+            return;
+        }
+
+        _npcPressure.AppendText(_selectedCityId is null && _selectedRouteId is null
+            ? "Top rival pressure:\n"
+            : "Selection pressure:\n");
+        foreach (var pressure in pressures)
+        {
+            _npcPressure.AppendText($"{NpcPressureLine(pressure)}\n");
+        }
     }
 
     private void UpdateWarehousePolicyControl()
@@ -1388,11 +1438,12 @@ public partial class BootstrapPanel : Control
             .ThenByDescending(contract => contract.ExpectedNet)
             .FirstOrDefault();
         var bestChain = _snapshot.ProductionChainOpportunities.FirstOrDefault();
+        var topNpcPressure = _snapshot.NpcPressures.FirstOrDefault();
         var policyCity = PolicyFocusCity();
         var currentLedger = _snapshot.Ledger.Where(entry => entry.Tick == _snapshot.Tick).ToArray();
 
         _testProbe.AppendText($"Determinism: seed {Seed} | tick {_snapshot.Tick} | save {ShortHash(_snapshot.SaveHash)}\n");
-        _testProbe.AppendText($"Company Ledger: cashflow {_snapshot.LastTickCashDelta:+0.00;-0.00;0.00} | events {currentLedger.Length} | AI move {_snapshot.AiChoice.OpportunityId}\n");
+        _testProbe.AppendText($"Company Ledger: cashflow {_snapshot.LastTickCashDelta:+0.00;-0.00;0.00} | events {currentLedger.Length} | NPC {_snapshot.AiChoice.OpportunityId}\n");
         _testProbe.AppendText(topCity?.Signal is null
             ? "Market Pressure: none\n"
             : $"Market Pressure: {topCity.City.Name} {ResourceLabel(topCity.Signal.ResourceId)} {topCity.Signal.MarketStock}/{topCity.Signal.ReorderPoint}, P{topCity.Signal.ShipmentPriority}, {topCity.Signal.PolicyAction}\n");
@@ -1408,6 +1459,9 @@ public partial class BootstrapPanel : Control
         _testProbe.AppendText(bestChain is null
             ? "Production Chains: none\n"
             : $"Production Chains: {RecipeLabel(bestChain.RecipeId)} at {bestChain.CityName}, {FormatSignedMoney(bestChain.ExpectedMargin)}, {bestChain.Reason}\n");
+        _testProbe.AppendText(topNpcPressure is null
+            ? "NPC Pressure: none\n"
+            : $"NPC Pressure: {NpcIntentLabel(topNpcPressure.Intent)} {ResourceLabel(topNpcPressure.ResourceId)} at {topNpcPressure.CityName}, pressure {topNpcPressure.Pressure.ToString("0.00", CultureInfo.InvariantCulture)}\n");
     }
 
     private static PanelContainer WrapPanel(Control child, bool horizontalExpand = true, float minimumWidth = 0.0f)
@@ -2259,6 +2313,35 @@ public partial class BootstrapPanel : Control
     private string OperationBrief(PrototypeRouteOperationView operation)
     {
         return $"{operation.Status} {ResourceLabel(operation.ResourceId)} x{operation.ExpectedUnits} {CityName(operation.FromNode)} -> {CityName(operation.ToNode)} ({FormatSignedMoney(operation.ExpectedNet)} net)";
+    }
+
+    private string TopNpcPressureMetric()
+    {
+        var pressure = _snapshot?.NpcPressures.FirstOrDefault();
+        return pressure is null
+            ? "none"
+            : $"{NpcIntentLabel(pressure.Intent)} {ResourceLabel(pressure.ResourceId)} {pressure.Pressure.ToString("0.00", CultureInfo.InvariantCulture)}";
+    }
+
+    private string NpcPressureLine(PrototypeNpcPressureView pressure)
+    {
+        var route = pressure.RouteId is null ? "city pressure" : RouteDisplayName(pressure.RouteId);
+        var state = pressure.CanContest ? "active" : "watching";
+        var destination = pressure.TargetCityName is null
+            ? ""
+            : $" -> {pressure.TargetCityName}";
+        return $"{pressure.CompanyName}: {NpcIntentLabel(pressure.Intent)} {ResourceLabel(pressure.ResourceId)} at {pressure.CityName}{destination} | P{pressure.ShipmentPriority}, pressure {pressure.Pressure.ToString("0.00", CultureInfo.InvariantCulture)}, {state} | {route}";
+    }
+
+    private static string NpcIntentLabel(string intent)
+    {
+        return intent switch
+        {
+            "contest_route" => "contests",
+            "back_production" => "backs",
+            "secure_inputs" => "secures",
+            _ => "pressures"
+        };
     }
 
     private PrototypeRouteContractView? SelectedContract()

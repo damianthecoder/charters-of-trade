@@ -28,8 +28,8 @@ if (-not $text.Contains("VISUAL_QA PASS")) {
 }
 
 $frames = Get-ChildItem -Path $outDir -Filter "*.png" | Sort-Object Name
-if ($frames.Count -ne 15) {
-    Write-Host "Visual QA expected 15 PNG captures, got $($frames.Count)."
+if ($frames.Count -ne 18) {
+    Write-Host "Visual QA expected 18 PNG captures, got $($frames.Count)."
     exit 1
 }
 

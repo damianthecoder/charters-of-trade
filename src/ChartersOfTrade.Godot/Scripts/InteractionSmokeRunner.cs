@@ -53,13 +53,16 @@ public partial class InteractionSmokeRunner : Control
         var runTwelveButton = FindButton(uiRoot, "Run 12");
         var resetSeedButton = FindButton(uiRoot, "Reset Seed");
         var selectContractButton = FindButton(uiRoot, "Select Contract");
+        var npcPressureLog = FindRequired<RichTextLabel>(uiRoot, control => string.Equals(control.Name, "NpcPressureLog", StringComparison.Ordinal));
 
         AssertSmoke(AnyVisibleTextContains(uiRoot, "System Test Bench"), "System Test Bench was not visible.");
         AssertSmoke(AnyVisibleTextContains(uiRoot, "Production Chains"), "Production Chains panel was not visible.");
+        AssertRichTextContains(uiRoot, "Top rival pressure:", "North Sea Company");
         AssertSmoke(!runTwelveButton.Disabled, "Run 12 was disabled.");
         AssertSmoke(!resetSeedButton.Disabled, "Reset Seed was disabled.");
         AssertSmoke(GetMetricValue(uiRoot, "Tick") == "0", "Initial tick metric was not zero.");
         AssertControlIntersectsViewport(runTwelveButton, "Run 12");
+        await ScrollControlIntoViewAsync(sidebarScroll, npcPressureLog, "NPC Pressure log");
         await ExerciseSidebarScrollAsync(sidebarScroll);
 
         var initialHash = GetMetricValue(uiRoot, "Save Hash");
@@ -90,6 +93,7 @@ public partial class InteractionSmokeRunner : Control
         await ClickMapAsync(map, MapPoint(map, reference, targetCity.X, targetCity.Y));
         AssertRichTextContains(uiRoot, targetCity.Name, "Company warehouse");
         AssertSmoke(AnyVisibleTextContains(uiRoot, "Top chain"), "City inspector did not expose the top production chain.");
+        AssertRichTextContains(uiRoot, targetCity.Name, "NPC Pressure:");
         AssertSmoke(AnyVisibleTextContains(uiRoot, $"Focus city: {targetCity.Name}"), "Warehouse policy did not focus the selected city.");
 
         var policyFocusOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "PolicyFocusOptions", StringComparison.Ordinal));
@@ -158,6 +162,7 @@ public partial class InteractionSmokeRunner : Control
 
         await ClickMapAsync(map, RouteHitPoint(map, reference, targetRoute));
         AssertRichTextContains(uiRoot, targetRoute.Id, "cashflow");
+        AssertRichTextContains(uiRoot, targetRoute.Id, "NPC Pressure:");
 
         var contractOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "ContractOptions", StringComparison.Ordinal));
         AssertSmoke(!contractOptions.Disabled, "Contract dropdown stayed disabled after selecting a route with contracts.");
@@ -184,6 +189,7 @@ public partial class InteractionSmokeRunner : Control
         AssertSmoke(AnyVisibleTextContains(uiRoot, "Selected contract:"), "Selected contract summary did not appear.");
         AssertSmoke(AnyVisibleTextContains(uiRoot, "Active route operation"), "Route operation summary did not appear after selecting a contract.");
         AssertSmoke(AnyVisibleTextContains(uiRoot, "Route Operation:"), "System probe did not report route operation state.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "NPC Pressure:"), "System probe did not report NPC pressure state.");
 
         await PressButtonAsync(advanceButton);
         AssertSmoke(GetMetricValue(uiRoot, "Tick") == "1", "Advance Tick did not advance the tick metric to 1.");

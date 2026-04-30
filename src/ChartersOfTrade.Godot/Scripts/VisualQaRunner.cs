@@ -47,9 +47,14 @@ public partial class VisualQaRunner : Control
             AssertQa(AnyVisibleTextContains(uiRoot, "Route Operation"), "Route operation summary was not present.");
 
             var sidebar = FindRequired<ScrollContainer>(uiRoot);
+            var npcPressureLog = FindRequired<RichTextLabel>(uiRoot, control => string.Equals(control.Name, "NpcPressureLog", StringComparison.Ordinal));
             var routePolicyOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "RoutePolicyResourceOptions", StringComparison.Ordinal));
             var policyFocusOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "PolicyFocusOptions", StringComparison.Ordinal));
             var warehouseModeOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "WarehouseModeOptions", StringComparison.Ordinal));
+            AssertQa(npcPressureLog.GetParsedText().Contains("Top rival pressure:", StringComparison.OrdinalIgnoreCase), "NPC Pressure panel did not render the rival pressure heading.");
+            AssertQa(npcPressureLog.GetParsedText().Contains("North Sea Company", StringComparison.OrdinalIgnoreCase), "NPC Pressure panel did not render a rival company line.");
+            await ScrollControlIntoViewAsync(sidebar, npcPressureLog, "NPC pressure log");
+            captures.Add(SaveCapture(outputDir, $"seed-{seed}-npc-pressure.png"));
             await ScrollControlIntoViewAsync(sidebar, routePolicyOptions, "Route policy resource options");
             await ScrollControlIntoViewAsync(sidebar, policyFocusOptions, "Warehouse policy focus options");
             await ScrollControlIntoViewAsync(sidebar, warehouseModeOptions, "Warehouse automation mode options");

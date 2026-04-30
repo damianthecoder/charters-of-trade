@@ -32,6 +32,9 @@ var tests = new (string Name, Action Run)[]
     ("prototype route operations are deterministic", PrototypeRouteOperationsAreDeterministic),
     ("prototype route operation selection exposes active state", PrototypeRouteOperationSelectionExposesActiveState),
     ("prototype route operation pauses when cargo is blocked", PrototypeRouteOperationPausesWhenCargoIsBlocked),
+    ("prototype NPC pressure is deterministic", PrototypeNpcPressureIsDeterministic),
+    ("prototype NPC pressure ordering is stable", PrototypeNpcPressureOrderingIsStable),
+    ("NPC pressure scorer tie-breaks and blocks safely", NpcPressureScorerTieBreaksAndBlocksSafely),
     ("prototype route policy hash is deterministic", PrototypeRoutePolicyHashIsDeterministic),
     ("prototype route resource reservation filters contracts", PrototypeRouteResourceReservationFiltersContracts),
     ("prototype route priority boosts contract ordering", PrototypeRoutePriorityBoostsContractOrdering),
@@ -51,6 +54,7 @@ var tests = new (string Name, Action Run)[]
     ("warehouse policy save-load preserves hash", WarehousePolicySaveLoadPreservesHash),
     ("route policy save validation rejects orphan priority", RoutePolicySaveValidationRejectsOrphanPriority),
     ("save load rejects negative stock", SaveLoadRejectsNegativeStock),
+    ("simulation core projects remain Godot-free", SimulationCoreProjectsRemainGodotFree),
     ("AI chooses the highest utility opportunity", AiChoosesHighestUtilityOpportunity)
 };
 
@@ -757,6 +761,9 @@ static void PrototypeRouteOperationPausesWhenCargoIsBlocked()
     AssertEqual("blocked cargo", blocked.PausedReason);
     AssertTrue(!blocked.CanDispatch, "Blocked operation should not dispatch.");
     AssertTrue(session.Current.AvailableContracts.All(candidate => candidate.Id != contract.Id), "Blocked route cargo should be removed from available contracts.");
+    AssertTrue(
+        session.Current.NpcPressures.All(pressure => !string.Equals(pressure.RouteOperationId, blocked.Id, StringComparison.Ordinal)),
+        "Blocked route operation should not create positive NPC pressure.");
 
     var tick = session.AdvanceTick();
     AssertTrue(tick.ActiveRouteOperation is not null, "Paused operation should remain visible after a tick.");
@@ -765,6 +772,104 @@ static void PrototypeRouteOperationPausesWhenCargoIsBlocked()
         && entry.RelatedId == contract.RouteId
         && entry.Message.Contains("route operation paused", StringComparison.Ordinal)
         && entry.Message.Contains("blocked cargo", StringComparison.Ordinal)), "Paused operation should explain blocked cargo in the ledger.");
+}
+
+static void PrototypeNpcPressureIsDeterministic()
+{
+    var bridge = new SimulationBridge();
+    var first = bridge.CreatePrototypeSession(424242);
+    var second = bridge.CreatePrototypeSession(424242);
+
+    AssertTrue(first.Current.NpcPressures.Count > 0, "Expected starter session to expose NPC pressure candidates.");
+    AssertEqual(
+        NpcPressureFingerprint(first.Current.NpcPressures),
+        NpcPressureFingerprint(second.Current.NpcPressures));
+    AssertTrue(IsReadOnlySnapshotObjectList(first.Current.NpcPressures), "NPC pressure should be exposed as a read-only snapshot list.");
+
+    first.AdvanceTick();
+    second.AdvanceTick();
+
+    AssertEqual(first.Current.SaveHash, second.Current.SaveHash);
+    AssertEqual(
+        NpcPressureFingerprint(first.Current.NpcPressures),
+        NpcPressureFingerprint(second.Current.NpcPressures));
+    AssertTrue(first.Current.Ledger.Any(entry =>
+        entry.Category == "AI"
+        && entry.Message.Contains("pressure", StringComparison.Ordinal)
+        && entry.Message.Contains(first.Current.NpcPressures.First().CompanyName, StringComparison.Ordinal)), "AI ledger should explain the top NPC pressure.");
+}
+
+static void PrototypeNpcPressureOrderingIsStable()
+{
+    var snapshot = new SimulationBridge().CreatePrototypeSession(20260429).Current;
+    AssertTrue(snapshot.NpcPressures.Any(pressure => pressure.RouteOperationId is not null), "Expected NPC pressure to consume route operation candidates.");
+    AssertTrue(snapshot.NpcPressures.Any(pressure => pressure.ProductionOpportunityId is not null), "Expected NPC pressure to consume production opportunities.");
+    foreach (var pressure in snapshot.NpcPressures.Where(pressure => pressure.ProductionOpportunityId is not null))
+    {
+        var chain = snapshot.ProductionChainOpportunities.Single(opportunity => opportunity.Id == pressure.ProductionOpportunityId);
+        AssertEqual(chain.CityId, pressure.CityId);
+    }
+
+    for (var i = 1; i < snapshot.NpcPressures.Count; i++)
+    {
+        var previous = snapshot.NpcPressures[i - 1];
+        var current = snapshot.NpcPressures[i];
+        AssertTrue(previous.Pressure >= current.Pressure, "NPC pressure should sort by pressure first.");
+        if (previous.Pressure == current.Pressure)
+        {
+            AssertTrue(previous.ShipmentPriority >= current.ShipmentPriority, "NPC pressure should break pressure ties by shipment priority.");
+        }
+
+        if (previous.Pressure == current.Pressure && previous.ShipmentPriority == current.ShipmentPriority)
+        {
+            AssertTrue(previous.ExpectedValue >= current.ExpectedValue, "NPC pressure should break priority ties by expected value.");
+        }
+
+        if (previous.Pressure == current.Pressure
+            && previous.ShipmentPriority == current.ShipmentPriority
+            && previous.ExpectedValue == current.ExpectedValue)
+        {
+            var previousTieBreak = $"{previous.CompanyId}:{previous.Intent}:{previous.Id}";
+            var currentTieBreak = $"{current.CompanyId}:{current.Intent}:{current.Id}";
+            AssertTrue(string.CompareOrdinal(previousTieBreak, currentTieBreak) <= 0, "NPC pressure should use ordinal ids after company and intent tie-breaks.");
+        }
+    }
+}
+
+static void NpcPressureScorerTieBreaksAndBlocksSafely()
+{
+    var ai = new DeterministicNpcPressureAi();
+    var right = new NpcPressureCandidate(
+        "npc:test:route:b",
+        "contest_route",
+        "node_001",
+        "route_001",
+        "route_001:node_002->node_001:grain",
+        null,
+        "grain",
+        25m,
+        3,
+        2,
+        true,
+        4m,
+        "same score b");
+    var left = right with { Id = "npc:test:route:a", RouteOperationId = "route_001:node_003->node_001:grain", Reason = "same score a" };
+
+    var ranked = ai.Rank("test_company", [right, left]).ToArray();
+    AssertEqual("npc:test:route:a", ranked[0].CandidateId);
+    AssertEqual("npc:test:route:b", ranked[1].CandidateId);
+
+    var blocked = right with
+    {
+        Id = "npc:test:route:blocked",
+        CanContest = false,
+        ExpectedValue = 200m,
+        ShipmentPriority = 4,
+        DemandServed = 12,
+        StrategicBonus = 20m,
+        Reason = "blocked cargo"
+    };
+    AssertEqual(0m, ai.Score("test_company", blocked).Pressure);
 }
 
 static void PrototypeRoutePolicyHashIsDeterministic()
@@ -1035,6 +1140,38 @@ static void SaveLoadRejectsNegativeStock()
     }
 }
 
+static void SimulationCoreProjectsRemainGodotFree()
+{
+    var root = FindRepositoryRoot();
+    var coreProjects = new[]
+    {
+        "AI.Company",
+        "CitySim.Core",
+        "Content.Core",
+        "Economy.Core",
+        "GodotBridge",
+        "Logistics.Core",
+        "Persistence.Core",
+        "WorldGen.Core"
+    };
+
+    foreach (var projectName in coreProjects)
+    {
+        var projectDir = Path.Combine(root, "src", projectName);
+        var projectFile = Directory.EnumerateFiles(projectDir, "*.csproj").Single();
+        var projectText = File.ReadAllText(projectFile);
+        AssertTrue(!projectText.Contains("Godot.NET.Sdk", StringComparison.Ordinal), $"{projectName} must not use the Godot SDK.");
+        AssertTrue(!projectText.Contains("PackageReference Include=\"Godot", StringComparison.Ordinal), $"{projectName} must not package-reference Godot.");
+
+        foreach (var sourceFile in Directory.EnumerateFiles(projectDir, "*.cs", SearchOption.AllDirectories))
+        {
+            var text = File.ReadAllText(sourceFile);
+            AssertTrue(!text.Contains("using Godot;", StringComparison.Ordinal), $"{projectName} must not import Godot in {Path.GetFileName(sourceFile)}.");
+            AssertTrue(!text.Contains("Godot.", StringComparison.Ordinal), $"{projectName} must not call Godot APIs in {Path.GetFileName(sourceFile)}.");
+        }
+    }
+}
+
 static void AiChoosesHighestUtilityOpportunity()
 {
     var route = new TradeRoute("route_001", "node_001", "node_002", "road", 12, 3, 1.5m);
@@ -1237,6 +1374,46 @@ static string ProductionLineFingerprint(IEnumerable<PrototypeProductionResourceL
                 line.BestRouteId ?? "",
                 line.BestDestinationUnitPrice ?? 0m,
                 line.DestinationShipmentPriority)));
+}
+
+static string NpcPressureFingerprint(IEnumerable<PrototypeNpcPressureView> pressures)
+{
+    return string.Join("|", pressures.Select(pressure =>
+        string.Format(
+            CultureInfo.InvariantCulture,
+            "{0}:{1}:{2}:{3}:{4}:{5}:{6}:{7}:{8}:{9:0.00}:{10}:{11:0.00}:{12}:{13}:{14}:{15}",
+            pressure.Id,
+            pressure.CompanyId,
+            pressure.Intent,
+            pressure.CityId,
+            pressure.TargetCityId ?? "",
+            pressure.RouteId ?? "",
+            pressure.RouteOperationId ?? "",
+            pressure.ProductionOpportunityId ?? "",
+            pressure.ResourceId,
+            pressure.Pressure,
+            pressure.ShipmentPriority,
+            pressure.ExpectedValue,
+            pressure.CanContest,
+            pressure.Reason,
+            pressure.CompanyName,
+            pressure.TargetCityName ?? "")));
+}
+
+static string FindRepositoryRoot()
+{
+    var directory = new DirectoryInfo(AppContext.BaseDirectory);
+    while (directory is not null)
+    {
+        if (File.Exists(Path.Combine(directory.FullName, "ChartersOfTrade.sln")))
+        {
+            return directory.FullName;
+        }
+
+        directory = directory.Parent;
+    }
+
+    throw new InvalidOperationException("Could not locate repository root from test output directory.");
 }
 
 static int FirstIndex<T>(IReadOnlyList<T> values, Func<T, bool> predicate)

@@ -2,7 +2,7 @@
 
 ## Status
 
-Planning only for this pass. No gameplay code edited because the first useful NPC slice depends on Stage 3 production-chain opportunities and Stage 4 route-operation candidates.
+Implemented first deterministic NPC pressure slice on `codex-stage5-deterministic-npc-pressure`.
 
 ## Context Read
 
@@ -103,3 +103,31 @@ After Stage 3/4 land their candidate surfaces, implement the smallest playable s
 - No new save version unless NPCs gain persistent state.
 - No Godot dependency in `AI.Company`.
 - No broader economic rebalancing while adding the first NPC pressure slice.
+
+## Implemented Slice
+
+- Added pure `NpcPressureCandidate`, `NpcPressureScore`, and `DeterministicNpcPressureAi` records/scorer in `AI.Company`.
+- Replaced the bridge's old raw warehouse-stock AI move path with a derived NPC pressure surface based on Stage 4 `RouteOperationCandidates` and Stage 3 `ProductionChainOpportunities`.
+- Added `PrototypeNpcPressureView` and `PrototypeSnapshot.NpcPressures`; pressure is sorted deterministically by pressure, shipment priority, expected value, company, intent, and stable id.
+- Non-dispatchable route operations now produce zero scored pressure instead of cash pressure; production pressure keeps the source city as `CityId` and exposes destination context separately.
+- Kept save format unchanged. NPC pressure has no persisted company budget, claims, route ownership, cooldowns, inventory, or hidden state.
+- Godot now shows NPC Pressure in the Company Ledger metric, a sidebar section, the system probe, and selected city/route inspectors.
+- Interaction smoke and visual QA assert the NPC Pressure surface renders a concrete `North Sea Company` pressure line.
+
+## Verification
+
+- `powershell -ExecutionPolicy Bypass -File .\tools\build.ps1`: passed with 0 warnings and 0 errors.
+- `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1`: passed with 47/47 console tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`; latest visual smoke frame `artifacts/godot-smoke/visual-smoke-20260430-19532700000002.png`.
+- `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1`: passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25.
+- `powershell -ExecutionPolicy Bypass -File .\tools\visual-qa.ps1`: passed with 18 captures in `artifacts/godot-visual-qa/visual-qa-20260430-195421`.
+
+## Review
+
+- Delegated simulation review found one P1: blocked route operations could still produce positive NPC cash pressure. Fixed by making non-contestable pressure candidates score zero and adding a blocked-route pressure test.
+- Delegated simulation review found one P2: production pressure used the demand destination as its city context. Fixed by keeping `CityId` anchored to the production source and adding target city context.
+- Delegated integration review returned GO with P2s for broad UI assertions and missing direct scorer fixtures. Fixed by naming/scanning the NPC pressure log, adding a dedicated visual QA capture, and adding a direct tie/blocked scorer test.
+
+## Handoff Notes
+
+- The scorer currently ranks source-production pressure very strongly across the benchmark corpus. This is acceptable for the first derived-pressure slice, but the next balance pass should add company strategy profiles before pressure becomes a persistent NPC commitment.
+- Full NPC ownership, budgets, cooldowns, claims, diplomacy, or long-lived actions remain out of scope until a save-format ADR is added.

@@ -130,6 +130,25 @@ public sealed record PrototypeProductionChainOpportunityView(
     string? CandidateRouteId,
     string Reason);
 
+public sealed record PrototypeNpcPressureView(
+    string Id,
+    string CompanyId,
+    string CompanyName,
+    string Intent,
+    string CityId,
+    string CityName,
+    string? TargetCityId,
+    string? TargetCityName,
+    string? RouteId,
+    string? RouteOperationId,
+    string? ProductionOpportunityId,
+    string ResourceId,
+    decimal Pressure,
+    int ShipmentPriority,
+    decimal ExpectedValue,
+    bool CanContest,
+    string Reason);
+
 public sealed record PrototypeSnapshot(
     int Tick,
     GeneratedWorld World,
@@ -156,6 +175,8 @@ public sealed record PrototypeSnapshot(
 
     public IReadOnlyList<PrototypeProductionChainOpportunityView> ProductionChainOpportunities { get; init; } = [];
 
+    public IReadOnlyList<PrototypeNpcPressureView> NpcPressures { get; init; } = [];
+
     public double UnmetDemandRatio => Prices.Count == 0 ? 0 : Math.Round(Prices.Average(price => Math.Max(0, price.Scarcity)), 4);
 
     public decimal LastTickCashDelta => Ledger.Where(entry => entry.Tick == Tick).Sum(entry => entry.CashDelta);
@@ -179,6 +200,8 @@ public sealed class PrototypeSession
 
     private const int MinPolicyStock = 0;
     private const int MaxPolicyStock = 64;
+    private const string NpcCompanyId = "north_sea_company";
+    private const string NpcCompanyName = "North Sea Company";
     public const string BalancedWarehouseMode = "balanced";
     public const string ConservativeWarehouseMode = "conservative";
 
@@ -571,16 +594,27 @@ public sealed class PrototypeSession
 
     private decimal RunAi(int tick)
     {
-        var opportunities = BuildOpportunities().ToArray();
-        if (opportunities.Length == 0)
+        var contracts = BuildAvailableContracts();
+        var routeOperations = BuildRouteOperationCandidates(contracts);
+        var activeOperation = BuildActiveRouteOperation();
+        var productionChains = BuildProductionChainOpportunities();
+        var pressures = BuildNpcPressures(productionChains, routeOperations, activeOperation);
+        var topPressure = pressures.FirstOrDefault();
+
+        if (topPressure is null)
         {
             _aiChoice = new OpportunityScore("none", 0m);
             return 0m;
         }
 
-        _aiChoice = new CompanyUtilityAi().ChooseBest(opportunities);
-        var pressure = _aiChoice.Score > 0 ? decimal.Round(Math.Min(8m, _aiChoice.Score * 0.02m), 2, MidpointRounding.AwayFromZero) : 0m;
-        _ledger.Add(new PrototypeLedgerEntry(tick, "AI", $"Competitor favors {_aiChoice.OpportunityId}", -pressure, _aiChoice.OpportunityId));
+        _aiChoice = new OpportunityScore(topPressure.Id, topPressure.Pressure);
+        var pressure = topPressure.Pressure > 0 ? RoundMoney(Math.Min(8m, topPressure.Pressure * 0.02m)) : 0m;
+        _ledger.Add(new PrototypeLedgerEntry(
+            tick,
+            "AI",
+            $"{topPressure.CompanyName} {NpcIntentLabel(topPressure.Intent)} {topPressure.ResourceId} at {topPressure.CityName}; pressure {topPressure.Pressure.ToString("0.00", CultureInfo.InvariantCulture)}; {topPressure.Reason}",
+            -pressure,
+            topPressure.RouteId ?? topPressure.CityId));
         return -pressure;
     }
 
@@ -610,6 +644,7 @@ public sealed class PrototypeSession
         var operationCandidates = BuildRouteOperationCandidates(contracts);
         var activeOperation = BuildActiveRouteOperation();
         var productionChains = BuildProductionChainOpportunities();
+        var npcPressures = BuildNpcPressures(productionChains, operationCandidates, activeOperation);
         var selectedContractId = activeOperation is not null
             ? _selectedContractId
             : null;
@@ -651,7 +686,8 @@ public sealed class PrototypeSession
             RouteOperationCandidates = operationCandidates,
             ActiveRouteOperation = activeOperation,
             RoutePolicies = BuildRoutePolicyViews(),
-            ProductionChainOpportunities = productionChains
+            ProductionChainOpportunities = productionChains,
+            NpcPressures = npcPressures
         };
     }
 
@@ -928,6 +964,134 @@ public sealed class PrototypeSession
             .ThenByDescending(opportunity => opportunity.Score)
             .ThenBy(opportunity => opportunity.CityId, StringComparer.Ordinal)
             .ThenBy(opportunity => opportunity.RecipeId, StringComparer.Ordinal)
+            .ToArray());
+    }
+
+    private IReadOnlyList<PrototypeNpcPressureView> BuildNpcPressures(
+        IReadOnlyList<PrototypeProductionChainOpportunityView> productionChains,
+        IReadOnlyList<PrototypeRouteOperationView> routeOperations,
+        PrototypeRouteOperationView? activeOperation)
+    {
+        var candidates = new List<NpcPressureCandidate>();
+        var contexts = new Dictionary<string, NpcPressureContext>(StringComparer.Ordinal);
+        var operationInputs = activeOperation is null
+            ? routeOperations
+            : routeOperations.Concat([activeOperation]).ToArray();
+
+        foreach (var operation in operationInputs
+            .GroupBy(operation => operation.Id, StringComparer.Ordinal)
+            .Select(group => group.First())
+            .OrderBy(operation => operation.Id, StringComparer.Ordinal))
+        {
+            var destination = _cities.FirstOrDefault(city => city.Id == operation.ToNode);
+            if (destination is null)
+            {
+                continue;
+            }
+
+            var id = $"npc:{NpcCompanyId}:route:{operation.Id}";
+            var strategicBonus = operation.IsActive ? 8m : 3m;
+            var reason = $"{operation.Status}; net {SignedMoney(operation.ExpectedNet)}, unmet {operation.UnmetDemandServed}, {operation.PolicyAction}";
+            candidates.Add(new NpcPressureCandidate(
+                id,
+                "contest_route",
+                destination.Id,
+                operation.RouteId,
+                operation.Id,
+                null,
+                operation.ResourceId,
+                operation.ExpectedNet,
+                operation.ShipmentPriority,
+                operation.UnmetDemandServed,
+                operation.CanDispatch,
+                strategicBonus,
+                reason));
+            contexts[id] = new NpcPressureContext(
+                destination.Id,
+                destination.Name,
+                null,
+                null,
+                operation.RouteId,
+                operation.Id,
+                null,
+                operation.ResourceId,
+                operation.CanDispatch);
+        }
+
+        foreach (var chain in productionChains.OrderBy(chain => chain.Id, StringComparer.Ordinal))
+        {
+            var output = chain.Outputs
+                .OrderByDescending(line => line.DestinationShipmentPriority)
+                .ThenByDescending(line => line.BestDestinationUnitPrice ?? line.LocalUnitPrice)
+                .ThenBy(line => line.ResourceId, StringComparer.Ordinal)
+                .FirstOrDefault();
+            if (output is null)
+            {
+                continue;
+            }
+
+            var targetCityId = output.BestDestinationCityId ?? chain.CityId;
+            var targetCity = _cities.FirstOrDefault(city => city.Id == targetCityId);
+            var targetCityName = targetCity?.Name ?? chain.CityName;
+            var id = $"npc:{NpcCompanyId}:production:{chain.Id}:{output.ResourceId}";
+            var intent = chain.IsReady ? "back_production" : "secure_inputs";
+            var strategicBonus = (chain.IsReady ? 5m : 1m) + (chain.CandidateRouteId is null ? 0m : 3m);
+            var destinationReason = string.Equals(targetCityId, chain.CityId, StringComparison.Ordinal)
+                ? "local output"
+                : $"demand at {targetCityName}";
+            var reason = $"{chain.Reason}; {destinationReason}; margin {SignedMoney(chain.ExpectedMargin)}";
+
+            candidates.Add(new NpcPressureCandidate(
+                id,
+                intent,
+                chain.CityId,
+                chain.CandidateRouteId,
+                null,
+                chain.Id,
+                output.ResourceId,
+                chain.ExpectedMargin,
+                chain.DestinationShipmentPriority,
+                Math.Max(0, output.OutputAmount),
+                chain.IsReady,
+                strategicBonus,
+                reason));
+            contexts[id] = new NpcPressureContext(
+                chain.CityId,
+                chain.CityName,
+                string.Equals(targetCityId, chain.CityId, StringComparison.Ordinal) ? null : targetCityId,
+                string.Equals(targetCityId, chain.CityId, StringComparison.Ordinal) ? null : targetCityName,
+                chain.CandidateRouteId,
+                null,
+                chain.Id,
+                output.ResourceId,
+                chain.IsReady);
+        }
+
+        return ReadOnlyCopy(new DeterministicNpcPressureAi()
+            .Rank(NpcCompanyId, candidates)
+            .Where(score => score.Pressure > 0m && contexts.ContainsKey(score.CandidateId))
+            .Select(score =>
+            {
+                var context = contexts[score.CandidateId];
+                return new PrototypeNpcPressureView(
+                    score.CandidateId,
+                    score.CompanyId,
+                    NpcCompanyName,
+                    score.Intent,
+                    context.CityId,
+                    context.CityName,
+                    context.TargetCityId,
+                    context.TargetCityName,
+                    context.RouteId,
+                    context.RouteOperationId,
+                    context.ProductionOpportunityId,
+                    context.ResourceId,
+                    score.Pressure,
+                    score.ShipmentPriority,
+                    score.ExpectedValue,
+                    context.CanContest,
+                    score.Reason);
+            })
             .ToArray());
     }
 
@@ -1274,33 +1438,6 @@ public sealed class PrototypeSession
                 policy.ReservedResources.Order(StringComparer.Ordinal).ToArray(),
                 policy.PriorityResourceId))
             .ToArray();
-    }
-
-    private IEnumerable<Opportunity> BuildOpportunities()
-    {
-        var charter = _cities[0];
-        var charterPrices = PricesFor(charter);
-
-        foreach (var route in Routes.OrderBy(route => route.Id, StringComparer.Ordinal))
-        {
-            var sourceId = route.FromNode == charter.Id ? route.ToNode : route.FromNode;
-            var source = _cities.FirstOrDefault(city => city.Id == sourceId);
-            if (source is null)
-            {
-                continue;
-            }
-
-            foreach (var resourceId in source.CompanyWarehouse.Stock.Keys.Order(StringComparer.Ordinal).Take(3))
-            {
-                charterPrices.TryGetValue(resourceId, out var price);
-                var expectedRevenue = price * Math.Min(4, Math.Max(1, source.CompanyWarehouse.Get(resourceId)));
-                var capitalCost = route.CostPerUnit * 2m;
-                var risk = route.Mode == "coastal" ? 0.18 : 0.10;
-                var volatility = resourceId is "tools" or "cloth" or "ceramics" ? 0.20 : 0.08;
-                var bonus = resourceId is "grain" or "wood" or "fish" ? 6m : 2m;
-                yield return new Opportunity($"{route.Id}:{resourceId}", route, resourceId, expectedRevenue, capitalCost, risk, volatility, bonus);
-            }
-        }
     }
 
     private Dictionary<string, decimal> PricesFor(RuntimeCity city)
@@ -1704,6 +1841,17 @@ public sealed class PrototypeSession
         return value.ToString("+0.00;-0.00;0.00", CultureInfo.InvariantCulture);
     }
 
+    private static string NpcIntentLabel(string intent)
+    {
+        return intent switch
+        {
+            "contest_route" => "contests route flow for",
+            "back_production" => "backs production of",
+            "secure_inputs" => "secures inputs for",
+            _ => "pressures"
+        };
+    }
+
     private static string PolicyAction(int shipmentPriority, int desiredStock, int marketStock, int consumptionPerTick, string mode)
     {
         var action = shipmentPriority switch
@@ -1791,6 +1939,17 @@ public sealed class PrototypeSession
     }
 
     private sealed record ProductionReservation(string CityId, string ResourceId, int Amount);
+
+    private sealed record NpcPressureContext(
+        string CityId,
+        string CityName,
+        string? TargetCityId,
+        string? TargetCityName,
+        string? RouteId,
+        string? RouteOperationId,
+        string? ProductionOpportunityId,
+        string ResourceId,
+        bool CanContest);
 
     private sealed record WarehousePolicyKey(string CityId, string ResourceId);
 
