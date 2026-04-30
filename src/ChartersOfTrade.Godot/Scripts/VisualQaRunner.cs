@@ -1,0 +1,202 @@
+using Godot;
+
+[GlobalClass]
+public partial class VisualQaRunner : Control
+{
+    private static readonly int[] Seeds = [424242, 424243, 20260429];
+    private static readonly string[] MapModes = ["Routes", "Profit", "Demand"];
+    private static readonly Vector2I QaWindowSize = new(1920, 1080);
+
+    public override async void _Ready()
+    {
+        try
+        {
+            await RunVisualQaAsync();
+            GetTree().Quit(0);
+        }
+        catch (Exception ex)
+        {
+            GD.PrintErr($"VISUAL_QA FAIL: {ex}");
+            GD.PushError($"VISUAL_QA FAIL: {ex.Message}");
+            GetTree().Quit(1);
+        }
+    }
+
+    private async Task RunVisualQaAsync()
+    {
+        if (string.Equals(DisplayServer.GetName(), "headless", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Visual QA requires a non-headless renderer.");
+        }
+
+        GetWindow().Size = QaWindowSize;
+        SetAnchorsPreset(LayoutPreset.FullRect);
+
+        var outputDir = OutputDirectory();
+        var captures = new List<string>();
+
+        foreach (var seed in Seeds)
+        {
+            var uiRoot = LoadMainScene(seed);
+            await WaitFrames(8);
+
+            AssertQa(!AnyVisibleTextContains(uiRoot, "Startup failed"), $"Seed {seed} rendered the startup failure view.");
+            AssertQa(AnyVisibleTextContains(uiRoot, $"Seed {seed}"), $"Seed {seed} was not visible in the System Test Bench.");
+            AssertQa(AnyVisibleTextContains(uiRoot, "Warehouse Policy"), "Warehouse Policy panel title was not present.");
+
+            foreach (var mode in MapModes)
+            {
+                await PressButtonAsync(uiRoot, mode);
+                AssertQa(AnyVisibleTextContains(uiRoot, mode), $"Map mode {mode} was not visible after selection.");
+                captures.Add(SaveCapture(outputDir, $"seed-{seed}-{mode.ToLowerInvariant()}.png"));
+            }
+
+            var sidebar = FindRequired<ScrollContainer>(uiRoot);
+            sidebar.ScrollVertical = (int)sidebar.GetVScrollBar().MaxValue;
+            await WaitFrames(3);
+            captures.Add(SaveCapture(outputDir, $"seed-{seed}-sidebar-bottom.png"));
+
+            uiRoot.QueueFree();
+            await WaitFrames(2);
+        }
+
+        GD.Print($"VISUAL_QA PASS {captures.Count} captures {outputDir}");
+    }
+
+    private Control LoadMainScene(int seed)
+    {
+        var packed = GD.Load<PackedScene>("res://scenes/Main.tscn")
+            ?? throw new InvalidOperationException("Could not load res://scenes/Main.tscn.");
+        var instance = packed.Instantiate<Control>();
+
+        if (instance is BootstrapPanel panel)
+        {
+            panel.Seed = seed;
+        }
+
+        instance.SetAnchorsPreset(LayoutPreset.FullRect);
+        AddChild(instance);
+        return instance;
+    }
+
+    private async Task PressButtonAsync(Node root, string text)
+    {
+        var button = FindRequired<Button>(root, button => string.Equals(button.Text, text, StringComparison.Ordinal));
+        AssertQa(!button.Disabled, $"Button '{text}' was disabled.");
+        button.EmitSignal(BaseButton.SignalName.Pressed);
+        await WaitFrames(3);
+        AssertQa(button.ButtonPressed, $"Button '{text}' did not remain selected.");
+    }
+
+    private string SaveCapture(string outputDir, string fileName)
+    {
+        var image = GetViewport().GetTexture().GetImage();
+        AssertQa(image.GetWidth() == QaWindowSize.X && image.GetHeight() == QaWindowSize.Y, $"Expected {QaWindowSize.X}x{QaWindowSize.Y}, got {image.GetWidth()}x{image.GetHeight()}.");
+        AssertQa(HasVisualContent(image), $"{fileName} looked blank or too flat.");
+
+        var path = Path.Combine(outputDir, fileName);
+        var result = image.SavePng(path);
+        if (result != Error.Ok)
+        {
+            throw new InvalidOperationException($"Could not save visual QA capture {path}: {result}.");
+        }
+
+        GD.Print($"VISUAL_QA_CAPTURE {path}");
+        return path;
+    }
+
+    private static bool HasVisualContent(Image image)
+    {
+        var colors = new HashSet<int>();
+        var lit = 0;
+        var stepX = Math.Max(1, image.GetWidth() / 64);
+        var stepY = Math.Max(1, image.GetHeight() / 36);
+
+        for (var y = 0; y < image.GetHeight(); y += stepY)
+        {
+            for (var x = 0; x < image.GetWidth(); x += stepX)
+            {
+                var color = image.GetPixel(x, y);
+                colors.Add(Quantize(color));
+                if (color.R > 0.14f || color.G > 0.14f || color.B > 0.14f)
+                {
+                    lit++;
+                }
+            }
+        }
+
+        return colors.Count >= 8 && lit >= 12;
+    }
+
+    private static int Quantize(Color color)
+    {
+        var r = (int)Math.Clamp(color.R * 15.0f, 0.0f, 15.0f);
+        var g = (int)Math.Clamp(color.G * 15.0f, 0.0f, 15.0f);
+        var b = (int)Math.Clamp(color.B * 15.0f, 0.0f, 15.0f);
+        var a = (int)Math.Clamp(color.A * 15.0f, 0.0f, 15.0f);
+        return r << 12 | g << 8 | b << 4 | a;
+    }
+
+    private static string OutputDirectory()
+    {
+        var requested = System.Environment.GetEnvironmentVariable("COT_VISUAL_QA_DIR");
+        if (!string.IsNullOrWhiteSpace(requested))
+        {
+            Directory.CreateDirectory(requested);
+            return requested;
+        }
+
+        var outputDir = ProjectSettings.GlobalizePath($"res://../../artifacts/godot-visual-qa/visual-qa-{DateTime.Now:yyyyMMdd-HHmmss}");
+        Directory.CreateDirectory(outputDir);
+        return outputDir;
+    }
+
+    private async Task WaitFrames(int count)
+    {
+        for (var i = 0; i < count; i++)
+        {
+            await ToSignal(GetTree(), SceneTree.SignalName.ProcessFrame);
+        }
+    }
+
+    private static bool AnyVisibleTextContains(Node root, string text)
+    {
+        return SelfAndDescendants(root).OfType<Label>().Any(label => label.Text.Contains(text, StringComparison.OrdinalIgnoreCase))
+            || SelfAndDescendants(root).OfType<RichTextLabel>().Any(label => label.GetParsedText().Contains(text, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static T FindRequired<T>(Node root, Func<T, bool>? predicate = null)
+        where T : Node
+    {
+        foreach (var node in SelfAndDescendants(root))
+        {
+            if (node is T typed && (predicate is null || predicate(typed)))
+            {
+                return typed;
+            }
+        }
+
+        throw new InvalidOperationException($"Could not find required node of type {typeof(T).Name}.");
+    }
+
+    private static IEnumerable<Node> SelfAndDescendants(Node root)
+    {
+        yield return root;
+
+        foreach (var child in root.GetChildren())
+        {
+            foreach (var descendant in SelfAndDescendants(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
+    private static void AssertQa(bool condition, string message)
+    {
+        if (!condition)
+        {
+            throw new InvalidOperationException(message);
+        }
+    }
+}

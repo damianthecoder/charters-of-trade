@@ -45,6 +45,9 @@ public partial class InteractionSmokeRunner : Control
         var routesButton = FindButton(uiRoot, "Routes");
         var profitButton = FindButton(uiRoot, "Profit");
         var demandButton = FindButton(uiRoot, "Demand");
+        var priorityPolicyButton = FindButton(uiRoot, "Priority");
+        var safetyPolicyButton = FindButton(uiRoot, "Safety");
+        var reorderPolicyButton = FindButton(uiRoot, "Reorder");
         var advanceButton = FindButton(uiRoot, "Advance Tick");
         var runFiveButton = FindButton(uiRoot, "Run 5");
         var runTwelveButton = FindButton(uiRoot, "Run 12");
@@ -85,11 +88,36 @@ public partial class InteractionSmokeRunner : Control
 
         await ClickMapAsync(map, MapPoint(map, reference, targetCity.X, targetCity.Y));
         AssertRichTextContains(uiRoot, targetCity.Name, "Company warehouse");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, $"Focus city: {targetCity.Name}"), "Warehouse policy did not focus the selected city.");
+
+        var policyFocusOptions = FindRequired<OptionButton>(uiRoot, options => options.Name == "PolicyFocusOptions");
+        AssertSmoke(!policyFocusOptions.Disabled, "Policy focus dropdown was disabled.");
+        AssertSmoke(policyFocusOptions.ItemCount > 1, "Policy focus dropdown did not contain city choices.");
+        var targetCityIndex = FindItemIndex(policyFocusOptions, targetCity.Name);
+        policyFocusOptions.Select(targetCityIndex);
+        policyFocusOptions.EmitSignal(OptionButton.SignalName.ItemSelected, (long)targetCityIndex);
+        await WaitFrames(2);
+        AssertSmoke(AnyVisibleTextContains(uiRoot, $"Focus city: {targetCity.Name}"), "Policy focus dropdown did not select the requested city.");
+
+        await PressButtonAsync(safetyPolicyButton);
+        AssertSmoke(safetyPolicyButton.ButtonPressed, "Safety policy view did not become selected.");
+        AssertSmoke(policyFocusOptions.GetItemText(0) == "Auto safety", "Safety policy view did not relabel auto focus.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "View: Safety stock guard"), "Warehouse policy did not render the safety stock view.");
+
+        await PressButtonAsync(reorderPolicyButton);
+        AssertSmoke(reorderPolicyButton.ButtonPressed, "Reorder policy view did not become selected.");
+        AssertSmoke(policyFocusOptions.GetItemText(0) == "Auto reorder", "Reorder policy view did not relabel auto focus.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "View: Reorder queue"), "Warehouse policy did not render the reorder queue view.");
+
+        await PressButtonAsync(priorityPolicyButton);
+        AssertSmoke(priorityPolicyButton.ButtonPressed, "Priority policy view did not become selected.");
+        AssertSmoke(policyFocusOptions.GetItemText(0) == "Auto priority", "Priority policy view did not relabel auto focus.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "View: Priority dispatch"), "Warehouse policy did not render the priority dispatch view.");
 
         await ClickMapAsync(map, RouteHitPoint(map, reference, targetRoute));
         AssertRichTextContains(uiRoot, targetRoute.Id, "cashflow");
 
-        var contractOptions = FindRequired<OptionButton>(uiRoot);
+        var contractOptions = FindRequired<OptionButton>(uiRoot, options => options.Name == "ContractOptions");
         AssertSmoke(!contractOptions.Disabled, "Contract dropdown stayed disabled after selecting a route with contracts.");
         AssertSmoke(contractOptions.ItemCount > 0, "Contract dropdown did not contain any choices.");
 
@@ -273,6 +301,19 @@ public partial class InteractionSmokeRunner : Control
     private static Button FindButton(Node root, string text)
     {
         return FindRequired<Button>(root, button => string.Equals(button.Text, text, StringComparison.Ordinal));
+    }
+
+    private static int FindItemIndex(OptionButton options, string text)
+    {
+        for (var i = 0; i < options.ItemCount; i++)
+        {
+            if (string.Equals(options.GetItemText(i), text, StringComparison.Ordinal))
+            {
+                return i;
+            }
+        }
+
+        throw new InvalidOperationException($"Could not find option '{text}'.");
     }
 
     private static T FindRequired<T>(Node root, Func<T, bool>? predicate = null)

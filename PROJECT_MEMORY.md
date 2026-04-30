@@ -2,7 +2,7 @@
 
 ## Current Goal
 
-Build the next P0 vertical-slice layer as a player-facing test harness: `agent/graphic-polish-pass` continues from the synced Full HD/visual readability work and makes the Godot prototype more appealing and readable for manual systems testing. The current pass follows the GPT Image mockup direction in code-native Godot UI: map-first composition, top map HUD, left map-mode rail, clearer labels, route direction markers, textured terrain detail, and sectioned sidebar panels.
+Build the next P0 vertical-slice layer as a player-facing test harness: `agent/warehouse-policy-view-controls` continues from the graphic polish pass by making warehouse policy signals easier to inspect in the Godot prototype. The current pass is presentation-only: focus and sort existing `PrototypeMarketSignal` data by Priority, Safety, or Reorder views without changing simulation state, save/hash semantics, or benchmark balance.
 
 ## Latest Decisions
 
@@ -31,6 +31,9 @@ Build the next P0 vertical-slice layer as a player-facing test harness: `agent/g
 - Cross-agent branch status: `origin/agent/visual-ux-map-modes` commit `ac44fb6` has been merged into the route-contract work. The integrated Godot UI now uses typed `AvailableContracts`, `SelectedContractId`, and `SelectRouteContract` instead of the visual branch's temporary reflection/placeholder bridge path.
 - World generation version `0.2.0` uses deterministic coherent terrain fields with border water, readable landmass/coastlines, explicit settlement spacing, coastal ports placed on coast-adjacent land, and coastal route mode only between two ports.
 - `tools/test.ps1` runs the normal build, console tests, headless Godot interaction smoke, and non-headless `tools/visual-smoke.ps1` Full HD render verification by default; set `COT_SKIP_VISUAL_SMOKE=1` only for constrained automation.
+- Warehouse Policy view controls are Godot-only inspection aids. `Priority`, `Safety`, `Reorder`, and policy focus selection sort/focus existing bridge view data; they do not mutate `PrototypeSession`, core simulation, save files, content hashes, or benchmark semantics.
+- The three-agent phase protocol is recorded in `docs/agent-plans/warehouse-policy-view-controls-team.md`: product/gameplay planner, Godot/UI implementer, QA/integration planner, plus a GPT-5.5 lead reviewer gate.
+- `tools/visual-qa.ps1` runs a non-headless Godot scene that captures 1920x1080 visual QA frames for seeds 424242, 424243, and 20260429 across Routes/Profit/Demand modes plus a scrolled sidebar view.
 
 ## System State
 
@@ -43,6 +46,8 @@ Build the next P0 vertical-slice layer as a player-facing test harness: `agent/g
 - `Content.Core`: JSON content loader, validation, and canonical content hash for P0 resources/recipes.
 - `GodotBridge`: dependency-free bridge facade plus `PrototypeSession`, which runs a deterministic P0 loop across content, world, economy, logistics, route contracts, city growth, AI, persistence hashing, per-city market pressure signals, and lightweight warehouse policy signals.
 - `ChartersOfTrade.Godot`: Godot .NET project with a `Main.tscn` prototype shell driven by `BootstrapPanel.cs`; it renders coherent terrain, coastline highlights, terrain texture marks, settlement nodes, route lines/arrows, top map HUD, left map-mode rail, KPI metrics, city summary, ledger, tick controls, city/route selection, hover states, collision-aware map labels, route cash labels, animated route pulses, supply rings, route/city warning marks, city type stamps, Routes/Profit/Demand map modes, polished route contract controls, market pressure, warehouse policy signals, sectioned sidebar panels, and a contextual inspector. `InteractionSmoke.tscn` loads the real scene and exercises expected user actions headlessly.
+- `ChartersOfTrade.Godot`: the Warehouse Policy panel now has Godot-only focus and view controls for Priority Dispatch, Safety Stock Guard, and Reorder Queue inspection over existing market signals.
+- `ChartersOfTrade.Godot`: `VisualQa.tscn` and `VisualQaRunner.cs` provide non-headless multi-seed visual capture for map modes and sidebar readability.
 - `Tests`: custom console test runner for determinism, terrain-sensitive world hashes, coherent world readability invariants, dense settlement configs, content validation, prototype ticks, route contracts, declared consumption, save validation, save/load, economy, AI, and Godot interaction smoke; latest Windows run passed 25/25 plus `INTERACTION_SMOKE PASS` and `VISUAL_SMOKE PASS`.
 - `Benchmarks`: console runner reporting seed-level playability metrics plus time-to-profit, bankruptcy frequency, post-run cash, AI move, and unmet demand.
 
@@ -90,6 +95,8 @@ Build the next P0 vertical-slice layer as a player-facing test harness: `agent/g
 - World generation now uses coherent deterministic value-noise terrain fields, records `WorldGenVersion` `0.2.0`, enforces readable settlement spacing for P0 configs, places ports only on coast-adjacent land, and limits coastal route mode to port-to-port edges.
 - Added `ADR-0005-coherent-worldgen-fields.md`; `tools/visual-smoke.ps1` now provides non-headless Full HD render verification and is called by `tools/test.ps1` unless `COT_SKIP_VISUAL_SMOKE=1`.
 - Graphic polish pass started on `agent/graphic-polish-pass` from synced Full HD work: `BootstrapPanel.cs` now uses sectioned sidebar cards, styled buttons, larger log text, a map title/HUD strip, left map-mode rail, richer deterministic terrain detail, route outlines/arrows, and collision-aware city labels. Review feedback fixed Event Ledger panel sizing, duplicate hover labels, and added a right gutter so the sidebar scrollbar does not crowd text.
+- Warehouse policy view controls pass started after graphic polish: added `docs/agent-plans/warehouse-policy-view-controls-team.md`, `docs/agent-plans/warehouse-policy-view-controls-review-gpt55.md`, `docs/checkpoints/2026-04-30-warehouse-policy-view-controls.md`, Godot-only policy focus/sort controls in `BootstrapPanel.cs`, and expanded `InteractionSmokeRunner.cs` coverage for policy mode buttons plus the policy focus dropdown.
+- Visual QA tooling added after full smoke verification: `tools/visual-qa.ps1`, `VisualQa.tscn`, and `VisualQaRunner.cs` now capture Routes/Profit/Demand and scrolled sidebar PNGs for three fixed seeds.
 
 ## Tests
 
@@ -105,6 +112,9 @@ Build the next P0 vertical-slice layer as a player-facing test harness: `agent/g
 - Full HD test UI verification: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 22/22 tests and `INTERACTION_SMOKE PASS` at tick 18; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7055, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks. Godot movie writer produced a confirmed 1920x1080 control frame at `artifacts/godot-smoke/full-hd-test-ui00000035.png`.
 - Visual readability verification after review fixes: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 25/25 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-03483900000002.png`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
 - Graphic polish verification after review fixes and merge with `origin/main`: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 25/25 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-04104500000002.png`; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks.
+- Warehouse policy view controls verification in the sandbox: `git diff --check` passed; `powershell -ExecutionPolicy Bypass -File .\tools\build.ps1` passed with 0 warnings and 0 errors; `dotnet run --project tests/ChartersOfTrade.Tests/ChartersOfTrade.Tests.csproj --no-build --no-restore` passed with 25/25 tests; `powershell -ExecutionPolicy Bypass -File .\tools\benchmark.ps1` passed with 25/25 playable seeds, average unmet demand ratio 0.7115, median time to profit 1.0, and bankruptcy frequency 0/25 after 12 ticks. Full `tools/test.ps1` failed before Godot smoke because sandboxed Godot could not open `user://logs` and then crashed with signal 11.
+- Warehouse policy view controls full Windows verification outside the sandbox: `powershell -ExecutionPolicy Bypass -File .\tools\test.ps1` passed with 25/25 tests, `INTERACTION_SMOKE PASS`, and `VISUAL_SMOKE PASS`, producing `artifacts/godot-smoke/visual-smoke-20260430-05241000000002.png`.
+- Visual QA tooling verification outside the sandbox: `powershell -ExecutionPolicy Bypass -File .\tools\visual-qa.ps1` passed with 12 captures at `artifacts/godot-visual-qa/visual-qa-20260430-052337`; representative review showed readable map modes and scrolled Warehouse Policy sidebar content.
 
 ## Risks
 
@@ -125,7 +135,8 @@ Build the next P0 vertical-slice layer as a player-facing test harness: `agent/g
 - Godot CLI smoke may need to run outside sandboxed Codex sessions because Godot writes editor/runtime logs under `user://`.
 - Map-label placement is still a simple local collision pass; future larger maps may need a dedicated label layout/cache layer.
 - Stale Godot debug windows can continue showing older compiled UI after branch/build changes; when visual changes do not appear, close existing Godot processes and relaunch from the current checkout.
+- Warehouse Policy view controls add sidebar density; manual 1920x1080 QA should verify text fit, scroll comfort, and that policy controls remain clear across Routes/Profit/Demand modes.
 
 ## Next Step
 
-Run manual visual QA across Routes/Profit/Demand modes and multiple seeds at 1920x1080 before adding the next warehouse automation controls.
+Push local branch `agent/warehouse-policy-view-controls` after explicit user approval, then open review or start the next narrow pass on player-facing warehouse policy decisions.

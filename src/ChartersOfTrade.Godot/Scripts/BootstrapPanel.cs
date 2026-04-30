@@ -11,11 +11,19 @@ public enum PrototypeMapMode
     Demand
 }
 
+public enum PrototypePolicyViewMode
+{
+    Priority,
+    Safety,
+    Reorder
+}
+
 [GlobalClass]
 public partial class BootstrapPanel : Control
 {
     private readonly Dictionary<string, Label> _metrics = [];
     private readonly Dictionary<PrototypeMapMode, Button> _mapModeButtons = [];
+    private readonly Dictionary<PrototypePolicyViewMode, Button> _policyModeButtons = [];
 
     private PrototypeSession? _session;
     private PrototypeSnapshot? _snapshot;
@@ -27,17 +35,22 @@ public partial class BootstrapPanel : Control
     private RichTextLabel? _policy;
     private RichTextLabel? _testProbe;
     private SpinBox? _seedInput;
+    private OptionButton? _policyFocusOptions;
     private Label? _contractSummary;
     private OptionButton? _contractOptions;
     private Button? _contractActionButton;
     private IReadOnlyList<PrototypeRouteContractView> _visibleContracts = [];
+    private IReadOnlyList<PrototypeCityView> _policyFocusCities = [];
     private PrototypeMapMode _mapMode = PrototypeMapMode.Routes;
+    private PrototypePolicyViewMode _policyViewMode = PrototypePolicyViewMode.Priority;
     private string? _pendingContractId;
     private string? _contractScopeKey;
     private string? _invalidContractId;
     private string? _selectedCityId;
     private string? _selectedRouteId;
+    private string? _policyFocusCityId;
     private bool _refreshingContractControl;
+    private bool _refreshingPolicyControl;
 
     private sealed record LayoutProfile(
         int OuterMargin,
@@ -214,6 +227,7 @@ public partial class BootstrapPanel : Control
 
         _contractOptions = new OptionButton
         {
+            Name = "ContractOptions",
             SizeFlagsHorizontal = SizeFlags.ExpandFill,
             CustomMinimumSize = new Vector2(0, 30)
         };
@@ -233,9 +247,28 @@ public partial class BootstrapPanel : Control
         _warnings.CustomMinimumSize = new Vector2(0, layout.WarningHeight);
         sidebar.AddChild(CreateSectionPanel("Market Pressure", _warnings));
 
+        var policyStack = CreateSectionStack();
+        policyStack.AddChild(CreateSectionHint("Focus and sort existing policy signals. These controls inspect priorities only; they do not change simulation state."));
+        _policyFocusOptions = new OptionButton
+        {
+            Name = "PolicyFocusOptions",
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 30)
+        };
+        _policyFocusOptions.ItemSelected += OnPolicyFocusSelected;
+        policyStack.AddChild(_policyFocusOptions);
+
+        var policyModes = new HBoxContainer();
+        policyModes.AddThemeConstantOverride("separation", 6);
+        policyStack.AddChild(policyModes);
+        AddPolicyModeButton(policyModes, "Priority", PrototypePolicyViewMode.Priority);
+        AddPolicyModeButton(policyModes, "Safety", PrototypePolicyViewMode.Safety);
+        AddPolicyModeButton(policyModes, "Reorder", PrototypePolicyViewMode.Reorder);
+
         _policy = CreateLog();
         _policy.CustomMinimumSize = new Vector2(0, layout.PolicyHeight);
-        sidebar.AddChild(CreateSectionPanel("Warehouse Policy", _policy));
+        policyStack.AddChild(_policy);
+        sidebar.AddChild(CreateSectionPanel("Warehouse Policy", policyStack));
 
         _cities = CreateLog();
         _cities.CustomMinimumSize = new Vector2(0, layout.CitiesHeight);
@@ -312,6 +345,7 @@ public partial class BootstrapPanel : Control
             _snapshot = _session.Current;
             _selectedCityId = null;
             _selectedRouteId = null;
+            _policyFocusCityId = null;
             _pendingContractId = null;
             _invalidContractId = null;
             UpdatePrototypeView();
@@ -354,6 +388,7 @@ public partial class BootstrapPanel : Control
         UpdateInspector();
         UpdateContractControl();
         UpdateWarnings();
+        UpdatePolicyControls();
         UpdatePolicyPanel();
         UpdateTestProbe();
 
@@ -377,6 +412,7 @@ public partial class BootstrapPanel : Control
 
         _metrics.Clear();
         _mapModeButtons.Clear();
+        _policyModeButtons.Clear();
         _map = null;
         _ledger = null;
         _cities = null;
@@ -385,20 +421,25 @@ public partial class BootstrapPanel : Control
         _policy = null;
         _testProbe = null;
         _seedInput = null;
+        _policyFocusOptions = null;
         _contractSummary = null;
         _contractOptions = null;
         _contractActionButton = null;
         _visibleContracts = [];
+        _policyFocusCities = [];
         _pendingContractId = null;
         _contractScopeKey = null;
         _invalidContractId = null;
+        _policyFocusCityId = null;
         _refreshingContractControl = false;
+        _refreshingPolicyControl = false;
     }
 
     private void SelectCity(string cityId)
     {
         _selectedCityId = cityId;
         _selectedRouteId = null;
+        _policyFocusCityId = cityId;
         _pendingContractId = null;
         _invalidContractId = null;
         UpdatePrototypeView();
@@ -408,6 +449,7 @@ public partial class BootstrapPanel : Control
     {
         _selectedRouteId = routeId;
         _selectedCityId = null;
+        _policyFocusCityId = null;
         _pendingContractId = null;
         _invalidContractId = null;
         UpdatePrototypeView();
@@ -417,6 +459,7 @@ public partial class BootstrapPanel : Control
     {
         _selectedCityId = null;
         _selectedRouteId = null;
+        _policyFocusCityId = null;
         _pendingContractId = null;
         _invalidContractId = null;
         UpdatePrototypeView();
@@ -446,6 +489,84 @@ public partial class BootstrapPanel : Control
         {
             button.ButtonPressed = mode == _mapMode;
         }
+    }
+
+    private void AddPolicyModeButton(HBoxContainer parent, string text, PrototypePolicyViewMode mode)
+    {
+        var button = CreateButton(text);
+        button.ToggleMode = true;
+        button.FocusMode = FocusModeEnum.None;
+        button.Pressed += () => SelectPolicyViewMode(mode);
+        parent.AddChild(button);
+        _policyModeButtons[mode] = button;
+    }
+
+    private void SelectPolicyViewMode(PrototypePolicyViewMode mode)
+    {
+        _policyViewMode = mode;
+        UpdatePolicyControls();
+        UpdatePolicyPanel();
+        UpdateTestProbe();
+    }
+
+    private void UpdatePolicyModeButtons()
+    {
+        foreach (var (mode, button) in _policyModeButtons)
+        {
+            button.ButtonPressed = mode == _policyViewMode;
+        }
+    }
+
+    private void UpdatePolicyControls()
+    {
+        UpdatePolicyModeButtons();
+
+        if (_snapshot is null || _policyFocusOptions is null)
+        {
+            return;
+        }
+
+        _refreshingPolicyControl = true;
+        _policyFocusOptions.Clear();
+        _policyFocusCities = _snapshot.Cities
+            .OrderBy(city => city.Name, StringComparer.Ordinal)
+            .ToArray();
+
+        _policyFocusOptions.AddItem(PolicyAutoFocusLabel(_policyViewMode), 0);
+        var selectedIndex = 0;
+        for (var i = 0; i < _policyFocusCities.Count; i++)
+        {
+            var city = _policyFocusCities[i];
+            _policyFocusOptions.AddItem(city.Name, i + 1);
+            if (string.Equals(city.Id, _policyFocusCityId, StringComparison.Ordinal))
+            {
+                selectedIndex = i + 1;
+            }
+        }
+
+        if (_policyFocusCityId is not null && selectedIndex == 0)
+        {
+            _policyFocusCityId = null;
+        }
+
+        _policyFocusOptions.Select(selectedIndex);
+        _policyFocusOptions.Disabled = _policyFocusCities.Count == 0;
+        _refreshingPolicyControl = false;
+    }
+
+    private void OnPolicyFocusSelected(long _)
+    {
+        if (_refreshingPolicyControl || _policyFocusOptions is null)
+        {
+            return;
+        }
+
+        var selected = _policyFocusOptions.Selected;
+        _policyFocusCityId = selected <= 0 || selected > _policyFocusCities.Count
+            ? null
+            : _policyFocusCities[selected - 1].Id;
+        UpdatePolicyPanel();
+        UpdateTestProbe();
     }
 
     private void KeepValidSelection()
@@ -678,12 +799,7 @@ public partial class BootstrapPanel : Control
 
         _policy.Clear();
 
-        var focusCity = _selectedCityId is not null
-            ? _snapshot.Cities.FirstOrDefault(city => city.Id == _selectedCityId)
-            : _snapshot.Cities
-                .OrderByDescending(city => TopPressureSignal(city)?.ShipmentPriority ?? 0)
-                .ThenBy(city => city.SupplySatisfaction)
-                .FirstOrDefault();
+        var focusCity = PolicyFocusCity();
 
         if (focusCity is null)
         {
@@ -691,13 +807,9 @@ public partial class BootstrapPanel : Control
             return;
         }
 
-        var signals = focusCity.MarketSignals
-            .Where(signal => signal.DesiredStock > 0)
-            .OrderByDescending(signal => signal.ShipmentPriority)
-            .ThenByDescending(signal => signal.Scarcity)
-            .Take(3)
-            .ToArray();
+        var signals = OrderedPolicySignals(focusCity).Take(4).ToArray();
 
+        _policy.AppendText($"View: {PolicyModeLabel(_policyViewMode)}\n");
         _policy.AppendText($"Focus city: {focusCity.Name}\n");
         if (signals.Length == 0)
         {
@@ -707,9 +819,117 @@ public partial class BootstrapPanel : Control
 
         foreach (var signal in signals)
         {
-            _policy.AppendText($"{ResourceLabel(signal.ResourceId)}: market {signal.MarketStock}/{signal.DesiredStock}, warehouse {signal.WarehouseStock}, safety {signal.SafetyStock}, reorder {signal.ReorderPoint}, P{signal.ShipmentPriority}\n");
+            _policy.AppendText(PolicySignalLine(signal));
             _policy.AppendText($"Action: {signal.PolicyAction}\n");
         }
+    }
+
+    private PrototypeCityView? PolicyFocusCity()
+    {
+        if (_snapshot is null)
+        {
+            return null;
+        }
+
+        if (_policyFocusCityId is not null)
+        {
+            var selected = _snapshot.Cities.FirstOrDefault(city => city.Id == _policyFocusCityId);
+            if (selected is not null)
+            {
+                return selected;
+            }
+
+            _policyFocusCityId = null;
+        }
+
+        return _policyViewMode switch
+        {
+            PrototypePolicyViewMode.Safety => _snapshot.Cities
+                .OrderByDescending(SafetyShortfall)
+                .ThenBy(city => city.SupplySatisfaction)
+                .FirstOrDefault(),
+            PrototypePolicyViewMode.Reorder => _snapshot.Cities
+                .OrderByDescending(ReorderShortfall)
+                .ThenBy(city => city.SupplySatisfaction)
+                .FirstOrDefault(),
+            _ => _snapshot.Cities
+                .OrderByDescending(city => TopPressureSignal(city)?.ShipmentPriority ?? 0)
+                .ThenBy(city => city.SupplySatisfaction)
+                .FirstOrDefault()
+        };
+    }
+
+    private IEnumerable<PrototypeMarketSignal> OrderedPolicySignals(PrototypeCityView city)
+    {
+        var signals = city.MarketSignals.Where(signal => signal.DesiredStock > 0);
+        return _policyViewMode switch
+        {
+            PrototypePolicyViewMode.Safety => signals
+                .OrderByDescending(signal => Math.Max(0, signal.SafetyStock - signal.WarehouseStock))
+                .ThenByDescending(signal => signal.SafetyStock)
+                .ThenByDescending(signal => signal.ShipmentPriority)
+                .ThenBy(signal => signal.ResourceId, StringComparer.Ordinal),
+            PrototypePolicyViewMode.Reorder => signals
+                .OrderByDescending(signal => Math.Max(0, signal.ReorderPoint - signal.MarketStock))
+                .ThenByDescending(signal => signal.ShipmentPriority)
+                .ThenByDescending(signal => signal.Scarcity)
+                .ThenBy(signal => signal.ResourceId, StringComparer.Ordinal),
+            _ => signals
+                .OrderByDescending(signal => signal.ShipmentPriority)
+                .ThenByDescending(signal => signal.Scarcity)
+                .ThenBy(signal => signal.ResourceId, StringComparer.Ordinal)
+        };
+    }
+
+    private string PolicySignalLine(PrototypeMarketSignal signal)
+    {
+        return _policyViewMode switch
+        {
+            PrototypePolicyViewMode.Safety =>
+                $"{ResourceLabel(signal.ResourceId)}: warehouse {signal.WarehouseStock}, safety {signal.SafetyStock}, exportable {Math.Max(0, signal.WarehouseStock - signal.SafetyStock)}, market {signal.MarketStock}/{signal.DesiredStock}, P{signal.ShipmentPriority}\n",
+            PrototypePolicyViewMode.Reorder =>
+                $"{ResourceLabel(signal.ResourceId)}: market {signal.MarketStock}, reorder {signal.ReorderPoint}, gap {Math.Max(0, signal.ReorderPoint - signal.MarketStock)}, warehouse {signal.WarehouseStock}, P{signal.ShipmentPriority}\n",
+            _ =>
+                $"{ResourceLabel(signal.ResourceId)}: market {signal.MarketStock}/{signal.DesiredStock}, warehouse {signal.WarehouseStock}, safety {signal.SafetyStock}, reorder {signal.ReorderPoint}, P{signal.ShipmentPriority}\n"
+        };
+    }
+
+    private static int SafetyShortfall(PrototypeCityView city)
+    {
+        return city.MarketSignals
+            .Where(signal => signal.DesiredStock > 0)
+            .Select(signal => Math.Max(0, signal.SafetyStock - signal.WarehouseStock))
+            .DefaultIfEmpty(0)
+            .Max();
+    }
+
+    private static int ReorderShortfall(PrototypeCityView city)
+    {
+        return city.MarketSignals
+            .Where(signal => signal.DesiredStock > 0)
+            .Select(signal => Math.Max(0, signal.ReorderPoint - signal.MarketStock))
+            .DefaultIfEmpty(0)
+            .Max();
+    }
+
+    private static string PolicyModeLabel(PrototypePolicyViewMode mode)
+    {
+        return mode switch
+        {
+            PrototypePolicyViewMode.Safety => "Safety stock guard",
+            PrototypePolicyViewMode.Reorder => "Reorder queue",
+            _ => "Priority dispatch"
+        };
+    }
+
+    private static string PolicyAutoFocusLabel(PrototypePolicyViewMode mode)
+    {
+        return mode switch
+        {
+            PrototypePolicyViewMode.Safety => "Auto safety",
+            PrototypePolicyViewMode.Reorder => "Auto reorder",
+            _ => "Auto priority"
+        };
     }
 
     private void UpdateTestProbe()
@@ -730,6 +950,7 @@ public partial class BootstrapPanel : Control
             .OrderByDescending(contract => contract.ShipmentPriority)
             .ThenByDescending(contract => contract.ExpectedNet)
             .FirstOrDefault();
+        var policyCity = PolicyFocusCity();
         var currentLedger = _snapshot.Ledger.Where(entry => entry.Tick == _snapshot.Tick).ToArray();
 
         _testProbe.AppendText($"Determinism: seed {Seed} | tick {_snapshot.Tick} | save {ShortHash(_snapshot.SaveHash)}\n");
@@ -737,6 +958,9 @@ public partial class BootstrapPanel : Control
         _testProbe.AppendText(topCity?.Signal is null
             ? "Market Pressure: none\n"
             : $"Market Pressure: {topCity.City.Name} {ResourceLabel(topCity.Signal.ResourceId)} {topCity.Signal.MarketStock}/{topCity.Signal.ReorderPoint}, P{topCity.Signal.ShipmentPriority}, {topCity.Signal.PolicyAction}\n");
+        _testProbe.AppendText(policyCity is null
+            ? $"Warehouse Policy: {PolicyModeLabel(_policyViewMode)}\n"
+            : $"Warehouse Policy: {PolicyModeLabel(_policyViewMode)} | focus {policyCity.Name}\n");
         _testProbe.AppendText(bestContract is null
             ? "Route Contract: none\n"
             : $"Route Contract: P{bestContract.ShipmentPriority} {ResourceLabel(bestContract.ResourceId)} x{bestContract.Units}, net {FormatSignedMoney(bestContract.ExpectedNet)}\n");
