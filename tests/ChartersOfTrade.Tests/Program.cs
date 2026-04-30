@@ -12,6 +12,9 @@ var tests = new (string Name, Action Run)[]
     ("world generation is deterministic", WorldGenerationIsDeterministic),
     ("world hash is culture invariant", WorldHashIsCultureInvariant),
     ("world hash includes terrain raster", WorldHashIncludesTerrainRaster),
+    ("generated terrain forms readable landmass", GeneratedTerrainFormsReadableLandmass),
+    ("dense settlement configs keep unique nodes", DenseSettlementConfigsKeepUniqueNodes),
+    ("impossible settlement configs fail clearly", ImpossibleSettlementConfigsFailClearly),
     ("generated world has a solvency kernel", GeneratedWorldHasSolvencyKernel),
     ("P0 content loads and validates", P0ContentLoadsAndValidates),
     ("content validation rejects unknown recipe resources", ContentValidationRejectsUnknownRecipeResources),
@@ -79,6 +82,66 @@ static void GeneratedWorldHasSolvencyKernel()
 {
     var world = new WorldGenerator().Generate(new WorldGenConfig(777));
     AssertTrue(world.HasSolvencyKernel, "Expected a food + wood + connected route solvency kernel.");
+}
+
+static void GeneratedTerrainFormsReadableLandmass()
+{
+    foreach (var seed in Enumerable.Range(1000, 25).Concat([777, 424242, 20260429]))
+    {
+        var world = new WorldGenerator().Generate(new WorldGenConfig(seed));
+        var landCount = world.Terrain.Count(cell => !cell.IsWater);
+        var landRatio = landCount / (double)world.Terrain.Count;
+        AssertTrue(landRatio > 0.42 && landRatio < 0.84, $"Expected readable land/water balance for seed {seed}, got {landRatio:0.00}.");
+        AssertTrue(world.Terrain.Where(cell => cell.X == 0 || cell.Y == 0 || cell.X == world.Width - 1 || cell.Y == world.Height - 1).All(cell => cell.IsWater), $"Expected seed {seed} to keep map borders water for coastline readability.");
+        AssertTrue(world.Terrain.Any(cell => !cell.IsWater && !TouchesWater(world, cell)), $"Expected seed {seed} to contain inland terrain, not only coast.");
+        AssertTrue(world.Terrain.Count(cell => !cell.IsWater && TouchesWater(world, cell)) >= Math.Max(8, world.Width / 2), $"Expected seed {seed} to expose visible coastline cells.");
+        foreach (var left in world.Nodes)
+        {
+            foreach (var right in world.Nodes.Where(node => string.CompareOrdinal(left.Id, node.Id) < 0))
+            {
+                AssertTrue(NodeDistance(left, right) >= 3.0, $"Expected settlements {left.Id} and {right.Id} in seed {seed} to stay visually separated.");
+            }
+        }
+
+        foreach (var port in world.Nodes.Where(node => node.Kind == "port"))
+        {
+            AssertTrue(TouchesWaterAt(world, port.X, port.Y), $"Expected port {port.Id} in seed {seed} to be placed on a coast.");
+        }
+
+        foreach (var edge in world.Edges.Where(edge => edge.Mode == "coastal"))
+        {
+            var from = world.Nodes.Single(node => node.Id == edge.FromNode);
+            var to = world.Nodes.Single(node => node.Id == edge.ToNode);
+            AssertTrue(from.Kind == "port" && to.Kind == "port", $"Expected coastal edge {edge.Id} in seed {seed} to connect two ports.");
+        }
+    }
+}
+
+static void DenseSettlementConfigsKeepUniqueNodes()
+{
+    var world = new WorldGenerator().Generate(new WorldGenConfig(424242, SettlementCount: 64));
+    var uniqueNodeCells = world.Nodes
+        .Select(node => (node.X, node.Y))
+        .Distinct()
+        .Count();
+
+    AssertEqual(64, world.Nodes.Count);
+    AssertEqual(world.Nodes.Count, uniqueNodeCells);
+    AssertTrue(world.Nodes.All(node => !IsWater(world, node.X, node.Y)), "Expected all dense-config settlements to remain on land.");
+}
+
+static void ImpossibleSettlementConfigsFailClearly()
+{
+    try
+    {
+        _ = new WorldGenerator().Generate(new WorldGenConfig(424242, SettlementCount: 1_000));
+    }
+    catch (ArgumentException ex) when (ex.Message.Contains("cannot place", StringComparison.Ordinal))
+    {
+        return;
+    }
+
+    throw new InvalidOperationException("Expected impossible settlement count to fail with a clear argument error.");
 }
 
 static void WorldHashIsCultureInvariant()
@@ -439,6 +502,31 @@ static void AssertTrue(bool condition, string message)
     {
         throw new InvalidOperationException(message);
     }
+}
+
+static bool TouchesWater(GeneratedWorld world, TerrainCell cell)
+{
+    return TouchesWaterAt(world, cell.X, cell.Y);
+}
+
+static bool TouchesWaterAt(GeneratedWorld world, int x, int y)
+{
+    return IsWater(world, x - 1, y)
+        || IsWater(world, x + 1, y)
+        || IsWater(world, x, y - 1)
+        || IsWater(world, x, y + 1);
+}
+
+static bool IsWater(GeneratedWorld world, int x, int y)
+{
+    return world.Terrain.FirstOrDefault(cell => cell.X == x && cell.Y == y)?.IsWater ?? true;
+}
+
+static double NodeDistance(WorldNode left, WorldNode right)
+{
+    var dx = left.X - right.X;
+    var dy = left.Y - right.Y;
+    return Math.Sqrt(dx * dx + dy * dy);
 }
 
 static string ContractFingerprint(IEnumerable<PrototypeRouteContractView> contracts)

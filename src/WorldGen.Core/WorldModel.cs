@@ -9,7 +9,7 @@ public sealed record WorldGenConfig(
     int Width = 32,
     int Height = 24,
     int SettlementCount = 8,
-    string WorldGenVersion = "0.1.0");
+    string WorldGenVersion = "0.2.0");
 
 public sealed record TerrainCell(int X, int Y, double Height, double Fertility, double Moisture, bool IsWater);
 
