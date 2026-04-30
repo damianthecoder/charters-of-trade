@@ -24,6 +24,7 @@ Build the next P0 vertical-slice layer from synced `main`, adding focused determ
 - Visual direction starts with Ledger Cartography: historical map and merchant ledger materiality combined with modern flow-map readability. Territory remains quiet; routes, markets, margins, capacity, and supply pressure are the main visual language.
 - Visual selection, hover, animation, map modes, colors, contract UI placeholders, and inspector state belong in the Godot presentation layer. They must not leak into the deterministic core or save format.
 - Graphic polish is a Godot presentation concern only. Map HUD chrome, label placement, terrain detail strokes, route arrows, button styles, and sidebar section panels are testing/readability affordances, not simulation state.
+- UI visibility is now a priority risk: recent gameplay systems are present in the Godot sidebar, but the overall presentation still reads too similar between development stages. The next visual pass should make new systems obvious through hierarchy, progress indicators, status cards, tick-change feedback, and stronger map overlays without changing deterministic core state.
 - Git is the project coordination baseline. Work should branch from `main`, keep generated Godot/.NET caches ignored, and use commits/checkpoints to make parallel agent work reviewable. The GitHub remote is `origin` at `https://github.com/damianthecoder/charters-of-trade.git`.
 - Each development phase starts by syncing local `main` from `origin/main`, creating a focused feature branch, and ends by running verification, committing, pushing to GitHub, and confirming the remote branch head.
 - Route contract selection is gameplay state, not transient UI state. Pending selected contracts are included in `SaveGame.PendingRouteContractId` and therefore in the state hash.
@@ -110,6 +111,7 @@ Build the next P0 vertical-slice layer from synced `main`, adding focused determ
 - MVP Stage 6 first charter season started on `codex-stage6-first-charter-season`: added `FirstCharterSeason` rules, save v3 `ScenarioObjectiveSaveState`, deterministic objective evaluation/scoring, selected route-operation delivery counting, stable need streaks, Godot objective panel, scenario benchmark metrics, `ADR-0007-first-charter-season-save-state.md`, and checkpoint `docs/checkpoints/2026-04-30-first-charter-season.md`.
 - MVP Stage 6 delegated review fixes made stable-need scoring use scenario-owned thresholds instead of player-lowered warehouse reorder points, changed selected route delivery counting to use a structured dispatch result instead of ledger text, added explicit first-charter end-reason rule coverage, tightened scenario save whitespace/duplicate validation, and made smoke/visual QA assert objective panel body text.
 - `tools/visual-qa.ps1` now expects 21 captures because each visual QA seed includes explicit Scenario Objective and NPC Pressure panel captures before the existing warehouse/map/sidebar captures.
+- UI visibility handoff recorded in `docs/checkpoints/2026-04-30-ui-visibility-handoff.md`: current `main` is synced and contains Stage 6 panels, but the visible difference is too subtle for tester confidence.
 
 ## Tests
 
@@ -156,6 +158,7 @@ Build the next P0 vertical-slice layer from synced `main`, adding focused determ
 - Godot CLI smoke may need to run outside sandboxed Codex sessions because Godot writes editor/runtime logs under `user://`.
 - Map-label placement is still a simple local collision pass; future larger maps may need a dedicated label layout/cache layer.
 - Stale Godot debug windows can continue showing older compiled UI after branch/build changes; when visual changes do not appear, close existing Godot processes and relaunch from the current checkout.
+- Even when the current UI is loaded correctly, Stage 3-6 gameplay additions are mostly communicated as sidebar text. This makes progress hard to perceive during manual testing and should be addressed before adding more deep systems.
 - Production-chain opportunities are currently read-only bridge metadata/UI; destination margin and route id can now link to Stage 4 route operation candidates, but production focus, build orders, or recurring production commands would be gameplay state and need a save-format decision.
 - NPC pressure is currently a derived, explainable rival signal, not persistent NPC company state. Full NPC budgets, claims, cooldowns, route ownership, or lasting commitments need a save-format/ADR decision.
 - The Stage 5 scorer often ranks source-production pressure above route pressure in the benchmark corpus; future balance work should tune strategy profiles once NPC pressure starts driving player-facing outcomes.
@@ -164,4 +167,4 @@ Build the next P0 vertical-slice layer from synced `main`, adding focused determ
 
 ## Next Step
 
-Add a scripted season-play benchmark that selects and maintains route operations so the first-charter win path is measured across the seed corpus.
+Start a focused UI visibility pass that makes Stage 3-6 systems visibly distinct in Full HD through objective progress, route/NPC status cards, tick-change feedback, and clearer map overlays.
