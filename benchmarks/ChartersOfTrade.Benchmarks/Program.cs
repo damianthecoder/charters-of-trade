@@ -11,6 +11,15 @@ var rows = new List<BenchmarkRow>();
 foreach (var seed in seeds)
 {
     var session = bridge.CreatePrototypeSession(seed);
+    foreach (var contract in session.Current.AvailableContracts
+        .Where(contract => contract.ExpectedNet > 0m)
+        .GroupBy(contract => contract.RouteId, StringComparer.Ordinal)
+        .Select(group => group.OrderByDescending(contract => contract.ShipmentPriority).ThenByDescending(contract => contract.ExpectedNet).First())
+        .Take(3))
+    {
+        session.SelectRouteContract(contract.Id);
+    }
+
     var initial = session.Current;
     var timeToProfit = -1;
     var bankrupt = false;
@@ -49,13 +58,15 @@ foreach (var seed in seeds)
         snapshot.ScenarioObjective.EndReason,
         snapshot.ScenarioObjective.FinalScore,
         snapshot.ScenarioObjective.CompletedCharters,
-        snapshot.ScenarioObjective.StableNeeds));
+        snapshot.ScenarioObjective.StableNeeds,
+        snapshot.ActiveRouteOperations.Count,
+        snapshot.RouteTransits.Count));
 }
 
-Console.WriteLine("seed,world_hash,solvency_kernel,route_count,median_route_profit_proxy,unmet_demand_ratio,time_to_profit,bankrupt,cash_after_12,ai_move,scenario_result,scenario_score,scenario_deliveries,scenario_stable_needs");
+Console.WriteLine("seed,world_hash,solvency_kernel,route_count,median_route_profit_proxy,unmet_demand_ratio,time_to_profit,bankrupt,cash_after_12,ai_move,scenario_result,scenario_score,scenario_deliveries,scenario_stable_needs,active_route_operations,in_transit_shipments");
 foreach (var row in rows)
 {
-    Console.WriteLine($"{row.Seed},{row.WorldHash},{row.HasSolvencyKernel},{row.RouteCount},{row.MedianRouteProfitProxy},{row.UnmetDemandRatio},{row.TimeToProfit},{row.Bankrupt},{row.CashAfter12},{row.AiMove},{row.ScenarioResult},{row.ScenarioScore},{row.ScenarioDeliveries},{row.ScenarioStableNeeds}");
+    Console.WriteLine($"{row.Seed},{row.WorldHash},{row.HasSolvencyKernel},{row.RouteCount},{row.MedianRouteProfitProxy},{row.UnmetDemandRatio},{row.TimeToProfit},{row.Bankrupt},{row.CashAfter12},{row.AiMove},{row.ScenarioResult},{row.ScenarioScore},{row.ScenarioDeliveries},{row.ScenarioStableNeeds},{row.ActiveRouteOperations},{row.InTransitShipments}");
 }
 
 var playable = rows.Count(row => row.HasSolvencyKernel);
@@ -66,6 +77,8 @@ Console.WriteLine($"Median time to profit: {Median(rows.Where(row => row.TimeToP
 Console.WriteLine($"Bankruptcy frequency: {rows.Count(row => row.Bankrupt)}/{rows.Count}");
 Console.WriteLine($"Average scenario score: {rows.Average(row => row.ScenarioScore):0.0}");
 Console.WriteLine($"Scenario wins/timeouts/bankruptcies: {rows.Count(row => row.ScenarioResult == FirstCharterSeason.Won)}/{rows.Count(row => row.ScenarioResult == FirstCharterSeason.Timeout)}/{rows.Count(row => row.ScenarioResult == FirstCharterSeason.Bankrupt)}");
+Console.WriteLine($"Average active route operations: {rows.Average(row => row.ActiveRouteOperations):0.0}");
+Console.WriteLine($"Average in-transit shipments: {rows.Average(row => row.InTransitShipments):0.0}");
 
 static double Median(IEnumerable<int> values)
 {
@@ -93,4 +106,6 @@ internal sealed record BenchmarkRow(
     string ScenarioResult,
     int ScenarioScore,
     int ScenarioDeliveries,
-    int ScenarioStableNeeds);
+    int ScenarioStableNeeds,
+    int ActiveRouteOperations,
+    int InTransitShipments);

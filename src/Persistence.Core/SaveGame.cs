@@ -44,6 +44,28 @@ public sealed record RoutePolicySaveState(
     IReadOnlyList<string> ReservedResources,
     string? PriorityResourceId);
 
+public sealed record RouteOperationSaveState(
+    string Id,
+    string SourceContractId,
+    string RouteId,
+    string FromNode,
+    string ToNode,
+    string ResourceId,
+    int UnitsPerDispatch);
+
+public sealed record RouteTransitSaveState(
+    string Id,
+    string OperationId,
+    string RouteId,
+    string FromNode,
+    string ToNode,
+    string ResourceId,
+    int Units,
+    int DispatchedTick,
+    int ArrivalTick,
+    decimal ExpectedRevenue,
+    decimal TransportCost);
+
 public sealed record ScenarioObjectiveSaveState(
     string ScenarioId,
     int RulesVersion,
@@ -71,12 +93,14 @@ public sealed record SaveGame(
     FogOfWarState FogOfWar,
     IReadOnlyList<WarehousePolicySaveState> WarehousePolicies,
     IReadOnlyList<RoutePolicySaveState> RoutePolicies,
+    IReadOnlyList<RouteOperationSaveState> RouteOperations,
+    IReadOnlyList<RouteTransitSaveState> RouteTransits,
     string? PendingRouteContractId,
     ScenarioObjectiveSaveState ScenarioObjective);
 
 public static class SaveCodec
 {
-    public const int CurrentSaveVersion = 3;
+    public const int CurrentSaveVersion = 4;
 
     private static readonly JsonSerializerOptions Options = new()
     {
@@ -128,6 +152,12 @@ public static class SaveCodec
                     ReservedResources = policy.ReservedResources.Order(StringComparer.Ordinal).ToArray()
                 })
                 .OrderBy(policy => policy.RouteId, StringComparer.Ordinal)
+                .ToArray(),
+            RouteOperations = save.RouteOperations
+                .OrderBy(operation => operation.Id, StringComparer.Ordinal)
+                .ToArray(),
+            RouteTransits = save.RouteTransits
+                .OrderBy(transit => transit.Id, StringComparer.Ordinal)
                 .ToArray(),
             FogOfWar = save.FogOfWar with
             {
@@ -319,6 +349,24 @@ public static class SaveValidator
             ValidateRoutePolicies(save, errors);
         }
 
+        if (save.RouteOperations is null)
+        {
+            errors.Add("routeOperations must not be null");
+        }
+        else
+        {
+            ValidateRouteOperations(save, errors);
+        }
+
+        if (save.RouteTransits is null)
+        {
+            errors.Add("routeTransits must not be null");
+        }
+        else
+        {
+            ValidateRouteTransits(save, errors);
+        }
+
         if (save.PendingRouteContractId is not null && string.IsNullOrWhiteSpace(save.PendingRouteContractId))
         {
             errors.Add("pendingRouteContractId must not be empty when present");
@@ -438,6 +486,197 @@ public static class SaveValidator
             if (!seenRoutes.Contains(routeId))
             {
                 errors.Add($"route policy '{routeId}' must be present for every saved route");
+            }
+        }
+    }
+
+    private static void ValidateRouteOperations(SaveGame save, List<string> errors)
+    {
+        var routesById = save.Routes
+            .Where(route => !string.IsNullOrWhiteSpace(route.Id))
+            .GroupBy(route => route.Id, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        var seenIds = new HashSet<string>(StringComparer.Ordinal);
+        var seenRouteCargo = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var operation in save.RouteOperations)
+        {
+            if (string.IsNullOrWhiteSpace(operation.Id))
+            {
+                errors.Add("route operation id must not be empty");
+            }
+            else if (!seenIds.Add(operation.Id))
+            {
+                errors.Add($"route operation '{operation.Id}' must not be duplicated");
+            }
+
+            if (string.IsNullOrWhiteSpace(operation.SourceContractId))
+            {
+                errors.Add($"route operation '{operation.Id}' sourceContractId must not be empty");
+            }
+
+            RouteSaveState? route = null;
+            if (string.IsNullOrWhiteSpace(operation.RouteId))
+            {
+                errors.Add($"route operation '{operation.Id}' routeId must not be empty");
+            }
+            else if (!routesById.TryGetValue(operation.RouteId, out route))
+            {
+                errors.Add($"route operation '{operation.Id}' must reference a saved route");
+            }
+
+            if (string.IsNullOrWhiteSpace(operation.FromNode))
+            {
+                errors.Add($"route operation '{operation.Id}' fromNode must not be empty");
+            }
+
+            if (string.IsNullOrWhiteSpace(operation.ToNode))
+            {
+                errors.Add($"route operation '{operation.Id}' toNode must not be empty");
+            }
+
+            if (string.IsNullOrWhiteSpace(operation.ResourceId))
+            {
+                errors.Add($"route operation '{operation.Id}' resourceId must not be empty");
+            }
+
+            if (operation.UnitsPerDispatch <= 0)
+            {
+                errors.Add($"route operation '{operation.Id}' unitsPerDispatch must be positive");
+            }
+
+            if (route is null)
+            {
+                continue;
+            }
+
+            var touchesEndpoints =
+                (string.Equals(operation.FromNode, route.FromNode, StringComparison.Ordinal) && string.Equals(operation.ToNode, route.ToNode, StringComparison.Ordinal))
+                || (string.Equals(operation.FromNode, route.ToNode, StringComparison.Ordinal) && string.Equals(operation.ToNode, route.FromNode, StringComparison.Ordinal));
+            if (!touchesEndpoints)
+            {
+                errors.Add($"route operation '{operation.Id}' fromNode/toNode must be the saved route endpoints");
+            }
+
+            if (!route.ReservedFor.Contains(operation.ResourceId, StringComparer.Ordinal))
+            {
+                errors.Add($"route operation '{operation.Id}' resourceId must be listed in the saved route reservedFor resources");
+            }
+
+            var routeCargoKey = $"{operation.RouteId}:{operation.FromNode}>{operation.ToNode}:{operation.ResourceId}";
+            if (!seenRouteCargo.Add(routeCargoKey))
+            {
+                errors.Add($"route operation '{routeCargoKey}' must not be duplicated");
+            }
+        }
+    }
+
+    private static void ValidateRouteTransits(SaveGame save, List<string> errors)
+    {
+        var routesById = save.Routes
+            .Where(route => !string.IsNullOrWhiteSpace(route.Id))
+            .GroupBy(route => route.Id, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal);
+        var operationsById = save.RouteOperations?
+            .Where(operation => !string.IsNullOrWhiteSpace(operation.Id))
+            .GroupBy(operation => operation.Id, StringComparer.Ordinal)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.Ordinal)
+            ?? new Dictionary<string, RouteOperationSaveState>(StringComparer.Ordinal);
+        var seenIds = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var transit in save.RouteTransits)
+        {
+            RouteOperationSaveState? operation = null;
+            if (string.IsNullOrWhiteSpace(transit.Id))
+            {
+                errors.Add("route transit id must not be empty");
+            }
+            else if (!seenIds.Add(transit.Id))
+            {
+                errors.Add($"route transit '{transit.Id}' must not be duplicated");
+            }
+
+            if (string.IsNullOrWhiteSpace(transit.OperationId))
+            {
+                errors.Add($"route transit '{transit.Id}' operationId must not be empty");
+            }
+            else if (!operationsById.TryGetValue(transit.OperationId, out operation))
+            {
+                errors.Add($"route transit '{transit.Id}' must reference a saved route operation");
+            }
+
+            RouteSaveState? route = null;
+            if (string.IsNullOrWhiteSpace(transit.RouteId))
+            {
+                errors.Add($"route transit '{transit.Id}' routeId must not be empty");
+            }
+            else if (!routesById.TryGetValue(transit.RouteId, out route))
+            {
+                errors.Add($"route transit '{transit.Id}' must reference a saved route");
+            }
+
+            if (string.IsNullOrWhiteSpace(transit.FromNode))
+            {
+                errors.Add($"route transit '{transit.Id}' fromNode must not be empty");
+            }
+
+            if (string.IsNullOrWhiteSpace(transit.ToNode))
+            {
+                errors.Add($"route transit '{transit.Id}' toNode must not be empty");
+            }
+
+            if (string.IsNullOrWhiteSpace(transit.ResourceId))
+            {
+                errors.Add($"route transit '{transit.Id}' resourceId must not be empty");
+            }
+
+            if (transit.Units <= 0)
+            {
+                errors.Add($"route transit '{transit.Id}' units must be positive");
+            }
+
+            if (transit.DispatchedTick < 0)
+            {
+                errors.Add($"route transit '{transit.Id}' dispatchedTick must not be negative");
+            }
+
+            if (transit.ArrivalTick <= transit.DispatchedTick)
+            {
+                errors.Add($"route transit '{transit.Id}' arrivalTick must be after dispatchedTick");
+            }
+
+            if (transit.ExpectedRevenue < 0m)
+            {
+                errors.Add($"route transit '{transit.Id}' expectedRevenue must not be negative");
+            }
+
+            if (transit.TransportCost < 0m)
+            {
+                errors.Add($"route transit '{transit.Id}' transportCost must not be negative");
+            }
+
+            if (route is null)
+            {
+                continue;
+            }
+
+            var touchesEndpoints =
+                (string.Equals(transit.FromNode, route.FromNode, StringComparison.Ordinal) && string.Equals(transit.ToNode, route.ToNode, StringComparison.Ordinal))
+                || (string.Equals(transit.FromNode, route.ToNode, StringComparison.Ordinal) && string.Equals(transit.ToNode, route.FromNode, StringComparison.Ordinal));
+            if (!touchesEndpoints)
+            {
+                errors.Add($"route transit '{transit.Id}' fromNode/toNode must be the saved route endpoints");
+            }
+
+            if (operation is not null)
+            {
+                if (!string.Equals(transit.RouteId, operation.RouteId, StringComparison.Ordinal)
+                    || !string.Equals(transit.FromNode, operation.FromNode, StringComparison.Ordinal)
+                    || !string.Equals(transit.ToNode, operation.ToNode, StringComparison.Ordinal)
+                    || !string.Equals(transit.ResourceId, operation.ResourceId, StringComparison.Ordinal))
+                {
+                    errors.Add($"route transit '{transit.Id}' must match its saved route operation");
+                }
             }
         }
     }
