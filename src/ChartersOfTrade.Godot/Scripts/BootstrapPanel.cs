@@ -22,6 +22,8 @@ public enum PrototypePolicyViewMode
 public partial class BootstrapPanel : Control
 {
     private readonly Dictionary<string, Label> _metrics = [];
+    private readonly Dictionary<string, Label> _statusCards = [];
+    private readonly Dictionary<string, ProgressBar> _seasonProgressBars = [];
     private readonly Dictionary<PrototypeMapMode, Button> _mapModeButtons = [];
     private readonly Dictionary<PrototypePolicyViewMode, Button> _policyModeButtons = [];
 
@@ -37,6 +39,7 @@ public partial class BootstrapPanel : Control
     private RichTextLabel? _scenarioObjective;
     private RichTextLabel? _policy;
     private RichTextLabel? _testProbe;
+    private Label? _tickFeedback;
     private SpinBox? _seedInput;
     private Label? _contractSummary;
     private OptionButton? _contractOptions;
@@ -189,6 +192,38 @@ public partial class BootstrapPanel : Control
         AddMetric(metricGrid, "Season Score");
         sidebar.AddChild(CreateSectionPanel("Company Ledger", metricGrid));
 
+        _tickFeedback = CreateInlineLabel("");
+        _tickFeedback.Name = "TickChangeFeedback";
+        _tickFeedback.AddThemeFontSizeOverride("font_size", 15);
+        _tickFeedback.AddThemeColorOverride("font_color", new Color(0.96f, 0.91f, 0.70f, 1.0f));
+        sidebar.AddChild(CreateSectionPanel("Tick Change", _tickFeedback));
+
+        var objectiveStack = CreateSectionStack();
+        _seasonProgressBars["cash"] = CreateSeasonProgressBar("SeasonCashProgress", objectiveStack, "Cash");
+        _seasonProgressBars["deliveries"] = CreateSeasonProgressBar("SeasonDeliveryProgress", objectiveStack, "Deliveries");
+        _seasonProgressBars["resources"] = CreateSeasonProgressBar("SeasonResourceProgress", objectiveStack, "Resources");
+        _seasonProgressBars["stable"] = CreateSeasonProgressBar("SeasonStableNeedsProgress", objectiveStack, "Stable Needs");
+
+        _scenarioObjective = CreateLog();
+        _scenarioObjective.Name = "ScenarioObjectiveLog";
+        _scenarioObjective.CustomMinimumSize = new Vector2(0, 104);
+        objectiveStack.AddChild(_scenarioObjective);
+        sidebar.AddChild(CreateSectionPanel("First Charter Season", objectiveStack));
+
+        sidebar.AddChild(CreateSectionLabel("Stage Systems"));
+        var statusGrid = new GridContainer
+        {
+            Columns = 2,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill
+        };
+        statusGrid.AddThemeConstantOverride("h_separation", 8);
+        statusGrid.AddThemeConstantOverride("v_separation", 8);
+        statusGrid.AddChild(CreateStatusCard("production", "Stage 3 Production", new Color(0.28f, 0.62f, 0.52f, 1.0f)));
+        statusGrid.AddChild(CreateStatusCard("routes", "Stage 4 Routes", new Color(0.73f, 0.53f, 0.20f, 1.0f)));
+        statusGrid.AddChild(CreateStatusCard("npc", "Stage 5 NPC", new Color(0.70f, 0.33f, 0.42f, 1.0f)));
+        statusGrid.AddChild(CreateStatusCard("warehouse", "Warehouse Guard", new Color(0.34f, 0.54f, 0.76f, 1.0f)));
+        sidebar.AddChild(statusGrid);
+
         var testStack = CreateSectionStack();
         testStack.AddChild(CreateSectionHint("Seed resets the same world, economy, routes, and save hash. Tick buttons advance the daily simulation so changes can be traced."));
         var seedRow = new HBoxContainer();
@@ -231,11 +266,6 @@ public partial class BootstrapPanel : Control
         _testProbe.CustomMinimumSize = new Vector2(0, layout.ProbeHeight);
         testStack.AddChild(_testProbe);
         sidebar.AddChild(CreateSectionPanel("System Test Bench", testStack));
-
-        _scenarioObjective = CreateLog();
-        _scenarioObjective.Name = "ScenarioObjectiveLog";
-        _scenarioObjective.CustomMinimumSize = new Vector2(0, 132);
-        sidebar.AddChild(CreateSectionPanel("First Charter Season", _scenarioObjective));
 
         var mapModeStack = CreateSectionStack();
         mapModeStack.AddChild(CreateSectionHint("Routes shows capacity, Profit shows this-tick cash, Demand shows city shortage pressure from local stock and reorder policy."));
@@ -486,6 +516,8 @@ public partial class BootstrapPanel : Control
         SetMetric("NPC Pressure", TopNpcPressureMetric());
         SetMetric("Unmet Demand", _snapshot.UnmetDemandRatio.ToString("0.0000", CultureInfo.InvariantCulture));
         SetMetric("Season Score", $"{_snapshot.ScenarioObjective.FinalScore}/100");
+        UpdateTickFeedback();
+        UpdateStatusCards();
 
         if (_cities is not null)
         {
@@ -528,6 +560,8 @@ public partial class BootstrapPanel : Control
         }
 
         _metrics.Clear();
+        _statusCards.Clear();
+        _seasonProgressBars.Clear();
         _mapModeButtons.Clear();
         _policyModeButtons.Clear();
         _map = null;
@@ -540,6 +574,7 @@ public partial class BootstrapPanel : Control
         _scenarioObjective = null;
         _policy = null;
         _testProbe = null;
+        _tickFeedback = null;
         _seedInput = null;
         _contractSummary = null;
         _contractOptions = null;
@@ -1065,13 +1100,29 @@ public partial class BootstrapPanel : Control
 
         var objective = _snapshot.ScenarioObjective;
         _scenarioObjective.Clear();
-        _scenarioObjective.AppendText($"{objective.Summary}\n");
+        SetSeasonProgress("cash", objective.CurrentCash, objective.CashTarget);
+        SetSeasonProgress("deliveries", objective.CompletedCharters, objective.RequiredCharters);
+        SetSeasonProgress("resources", objective.DistinctResources, objective.RequiredDistinctResources);
+        SetSeasonProgress("stable", objective.StableNeeds, objective.RequiredStableNeeds);
+
+        _scenarioObjective.AppendText($"{objective.Label}: {objective.Summary}\n");
         _scenarioObjective.AppendText($"Tick {objective.CurrentTick}/{objective.TickLimit} | Cash {objective.CurrentCash.ToString("0.00", CultureInfo.InvariantCulture)}/{objective.CashTarget.ToString("0.00", CultureInfo.InvariantCulture)}\n");
         _scenarioObjective.AppendText($"Deliveries {objective.CompletedCharters}/{objective.RequiredCharters} | Resources {objective.DistinctResources}/{objective.RequiredDistinctResources}\n");
         _scenarioObjective.AppendText($"Stable needs {objective.StableNeeds}/{objective.RequiredStableNeeds} for {objective.StabilityWindowTicks} ticks\n");
         _scenarioObjective.AppendText(objective.IsComplete
             ? $"Result: {ScenarioResultLabel(objective)}\n"
             : $"Next: {objective.NextStep}\n");
+    }
+
+    private void SetSeasonProgress(string key, decimal current, decimal target)
+    {
+        if (!_seasonProgressBars.TryGetValue(key, out var bar))
+        {
+            return;
+        }
+
+        var value = target <= 0m ? 100.0 : (double)Math.Clamp(current / target, 0m, 1m) * 100.0;
+        bar.Value = value;
     }
 
     private static string ScenarioResultLabel(PrototypeScenarioObjectiveView objective)
@@ -1631,6 +1682,70 @@ public partial class BootstrapPanel : Control
         };
     }
 
+    private PanelContainer CreateStatusCard(string key, string title, Color accent)
+    {
+        var panel = new PanelContainer
+        {
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 88)
+        };
+        panel.AddThemeStyleboxOverride("panel", new StyleBoxFlat
+        {
+            BgColor = new Color(0.050f, 0.058f, 0.056f, 0.98f),
+            BorderColor = accent,
+            BorderWidthLeft = 4,
+            BorderWidthTop = 1,
+            BorderWidthRight = 1,
+            BorderWidthBottom = 1,
+            CornerRadiusBottomLeft = 4,
+            CornerRadiusBottomRight = 4,
+            CornerRadiusTopLeft = 4,
+            CornerRadiusTopRight = 4,
+            ContentMarginLeft = 10,
+            ContentMarginTop = 8,
+            ContentMarginRight = 10,
+            ContentMarginBottom = 8
+        });
+
+        var stack = CreateSectionStack();
+        stack.AddThemeConstantOverride("separation", 3);
+        var titleLabel = CreateInlineLabel(title);
+        titleLabel.AddThemeFontSizeOverride("font_size", 12);
+        titleLabel.AddThemeColorOverride("font_color", accent.Lightened(0.28f));
+        stack.AddChild(titleLabel);
+
+        var body = CreateInlineLabel("");
+        body.Name = $"StatusCard{CultureInfo.InvariantCulture.TextInfo.ToTitleCase(key)}";
+        body.AddThemeFontSizeOverride("font_size", 12);
+        body.CustomMinimumSize = new Vector2(0, 42);
+        stack.AddChild(body);
+        _statusCards[key] = body;
+
+        panel.AddChild(stack);
+        return panel;
+    }
+
+    private static ProgressBar CreateSeasonProgressBar(string name, VBoxContainer parent, string label)
+    {
+        var row = new HBoxContainer { SizeFlagsHorizontal = SizeFlags.ExpandFill };
+        row.AddThemeConstantOverride("separation", 8);
+        var text = CreateMetricLabel(label, new Color(0.70f, 0.75f, 0.72f, 1.0f), HorizontalAlignment.Left);
+        text.CustomMinimumSize = new Vector2(88, 0);
+        row.AddChild(text);
+        var bar = new ProgressBar
+        {
+            Name = name,
+            MinValue = 0,
+            MaxValue = 100,
+            ShowPercentage = true,
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 18)
+        };
+        row.AddChild(bar);
+        parent.AddChild(row);
+        return bar;
+    }
+
     private static StyleBoxFlat CreateButtonStyle(Color background, Color border)
     {
         return new StyleBoxFlat
@@ -1789,6 +1904,66 @@ public partial class BootstrapPanel : Control
         if (_metrics.TryGetValue(label, out var control))
         {
             control.Text = value;
+        }
+    }
+
+    private void UpdateTickFeedback()
+    {
+        if (_snapshot is null || _tickFeedback is null)
+        {
+            return;
+        }
+
+        var events = _snapshot.Ledger.Count(entry => entry.Tick == _snapshot.Tick);
+        var routeEvents = _snapshot.Ledger.Count(entry => entry.Tick == _snapshot.Tick && entry.Category.Contains("route", StringComparison.OrdinalIgnoreCase));
+        var cash = _snapshot.LastTickCashDelta.ToString("+0.00;-0.00;0.00", CultureInfo.InvariantCulture);
+        var active = _snapshot.ActiveRouteOperation is null
+            ? "no active route operation"
+            : $"{ResourceLabel(_snapshot.ActiveRouteOperation.ResourceId)} moving on {_snapshot.ActiveRouteOperation.RouteId}";
+        _tickFeedback.Text = _snapshot.Tick == 0
+            ? "Ready: Stage 3-6 systems are loaded; use Advance Tick to watch deltas."
+            : $"Tick {_snapshot.Tick}: cash {cash}, {events} ledger events, {routeEvents} route updates; {active}.";
+    }
+
+    private void UpdateStatusCards()
+    {
+        if (_snapshot is null)
+        {
+            return;
+        }
+
+        var bestChain = _snapshot.ProductionChainOpportunities.FirstOrDefault();
+        SetStatusCard("production", bestChain is null
+            ? "No chains ready"
+            : $"{RecipeLabel(bestChain.RecipeId)} at {bestChain.CityName}\nmargin {FormatSignedMoney(bestChain.ExpectedMargin)} | {bestChain.Reason}");
+
+        var activeOperation = _snapshot.ActiveRouteOperation;
+        var bestOperation = activeOperation ?? _snapshot.RouteOperationCandidates.FirstOrDefault();
+        SetStatusCard("routes", bestOperation is null
+            ? "No route operation candidate"
+            : $"{(activeOperation is null ? "Candidate" : "Active")} {ResourceLabel(bestOperation.ResourceId)}\ncap {bestOperation.UsedCapacity}/{bestOperation.CapacityPerDay}, net {FormatSignedMoney(bestOperation.ExpectedNet)}");
+
+        var topNpc = _snapshot.NpcPressures.FirstOrDefault();
+        SetStatusCard("npc", topNpc is null
+            ? "No rival pressure"
+            : $"{topNpc.CompanyName}\n{NpcIntentLabel(topNpc.Intent)} {ResourceLabel(topNpc.ResourceId)} | pressure {topNpc.Pressure.ToString("0.00", CultureInfo.InvariantCulture)}");
+
+        var topWarehouse = _snapshot.Cities
+            .Select(city => new { City = city, Signal = TopPressureSignal(city) })
+            .Where(item => item.Signal is not null)
+            .OrderByDescending(item => item.Signal!.ShipmentPriority)
+            .ThenByDescending(item => item.Signal!.Scarcity)
+            .FirstOrDefault();
+        SetStatusCard("warehouse", topWarehouse?.Signal is null
+            ? "No warehouse pressure"
+            : $"{topWarehouse.City.Name}\n{ResourceLabel(topWarehouse.Signal.ResourceId)} {topWarehouse.Signal.MarketStock}/{topWarehouse.Signal.ReorderPoint}, P{topWarehouse.Signal.ShipmentPriority}");
+    }
+
+    private void SetStatusCard(string key, string value)
+    {
+        if (_statusCards.TryGetValue(key, out var label))
+        {
+            label.Text = value;
         }
     }
 
@@ -2661,6 +2836,7 @@ public partial class PrototypeMapView : Control
         DrawModeBanner(_snapshot);
         DrawRoutes(_snapshot);
         DrawCities(_snapshot);
+        DrawSystemOverlays(_snapshot);
         DrawLegend(_snapshot);
         DrawHoverLabel(_snapshot);
     }
@@ -2936,6 +3112,203 @@ public partial class PrototypeMapView : Control
                 DrawPlacedMapLabel(cityLabel.Point, text, occupiedLabels, city.X < snapshot.World.Width / 2, CityKindColor(cityLabel.Kind, city.SupplySatisfaction));
             }
         }
+    }
+
+    private void DrawSystemOverlays(PrototypeSnapshot snapshot)
+    {
+        DrawObjectiveProgressOverlay(snapshot);
+        DrawProductionOpportunityOverlay(snapshot);
+        DrawRouteOperationOverlay(snapshot);
+        DrawNpcPressureOverlay(snapshot);
+        DrawWarehousePressureOverlay(snapshot);
+    }
+
+    private void DrawObjectiveProgressOverlay(PrototypeSnapshot snapshot)
+    {
+        var objective = snapshot.ScenarioObjective;
+        var origin = new Vector2(Size.X - 318, 84);
+        var panel = new Rect2(origin, new Vector2(292, 76));
+        DrawRect(panel, new Color(0.034f, 0.040f, 0.039f, 0.90f));
+        DrawRect(new Rect2(panel.Position, new Vector2(4, panel.Size.Y)), new Color(0.83f, 0.64f, 0.25f, 0.88f));
+        DrawString(_font, origin + new Vector2(14, 22), "FIRST CHARTER SEASON", HorizontalAlignment.Left, 188, 12, new Color(0.96f, 0.83f, 0.48f, 1.0f));
+        DrawString(_font, origin + new Vector2(210, 22), $"{objective.FinalScore}/100", HorizontalAlignment.Right, 62, 15, new Color(0.97f, 0.94f, 0.80f, 1.0f));
+
+        DrawMiniProgress(origin + new Vector2(14, 36), 124, objective.CurrentCash, objective.CashTarget, new Color(0.29f, 0.62f, 0.45f, 1.0f));
+        DrawMiniProgress(origin + new Vector2(148, 36), 124, objective.CompletedCharters, objective.RequiredCharters, new Color(0.72f, 0.50f, 0.18f, 1.0f));
+        DrawString(_font, origin + new Vector2(14, 64), $"Cash {objective.CurrentCash:0}/{objective.CashTarget:0}", HorizontalAlignment.Left, 116, 11, new Color(0.80f, 0.84f, 0.78f, 1.0f));
+        DrawString(_font, origin + new Vector2(148, 64), $"Runs {objective.CompletedCharters}/{objective.RequiredCharters}", HorizontalAlignment.Left, 116, 11, new Color(0.80f, 0.84f, 0.78f, 1.0f));
+    }
+
+    private void DrawProductionOpportunityOverlay(PrototypeSnapshot snapshot)
+    {
+        var chains = snapshot.ProductionChainOpportunities.Take(4).ToArray();
+        foreach (var chain in chains)
+        {
+            var city = snapshot.Cities.FirstOrDefault(city => city.Id == chain.CityId);
+            if (city is null)
+            {
+                continue;
+            }
+
+            var point = PointFor(snapshot, city.X, city.Y);
+            var readyColor = chain.IsReady
+                ? new Color(0.24f, 0.78f, 0.60f, 0.92f)
+                : new Color(0.83f, 0.62f, 0.20f, 0.88f);
+            DrawArc(point, 25.0f, 0.0f, Mathf.Tau * 0.78f, 36, readyColor, 3.0f, true);
+            DrawArc(point, 30.0f, Mathf.Tau * 0.52f, Mathf.Tau * 0.93f, 24, readyColor.Darkened(0.18f), 2.0f, true);
+        }
+
+        var labelChain = chains.FirstOrDefault();
+        if (labelChain is not null)
+        {
+            var city = snapshot.Cities.FirstOrDefault(city => city.Id == labelChain.CityId);
+            if (city is not null)
+            {
+                DrawMapLabel(PointFor(snapshot, city.X, city.Y) + new Vector2(16, -42), $"Stage 3 {RecipeLabel(labelChain.RecipeId)} {labelChain.ExpectedMargin:+0.00;-0.00;0.00}", minWidth: 178, accent: new Color(0.24f, 0.78f, 0.60f, 0.92f));
+            }
+        }
+    }
+
+    private void DrawRouteOperationOverlay(PrototypeSnapshot snapshot)
+    {
+        var operation = snapshot.ActiveRouteOperation ?? snapshot.RouteOperationCandidates.FirstOrDefault();
+        if (operation is null)
+        {
+            return;
+        }
+
+        var route = snapshot.Routes.FirstOrDefault(route => route.Id == operation.RouteId);
+        var from = snapshot.Cities.FirstOrDefault(city => city.Id == operation.FromNode);
+        var to = snapshot.Cities.FirstOrDefault(city => city.Id == operation.ToNode);
+        if (route is null || from is null || to is null)
+        {
+            return;
+        }
+
+        var start = PointFor(snapshot, from.X, from.Y);
+        var end = PointFor(snapshot, to.X, to.Y);
+        var accent = operation.IsActive
+            ? new Color(0.95f, 0.66f, 0.24f, 0.96f)
+            : new Color(0.80f, 0.73f, 0.46f, 0.72f);
+        DrawLine(start, end, new Color(0.03f, 0.02f, 0.01f, 0.76f), 11.0f, true);
+        DrawLine(start, end, accent, operation.IsActive ? 6.0f : 4.2f, true);
+        DrawRoutePulse(start, end, accent.Lightened(0.18f), true);
+        DrawMapLabel((start + end) / 2.0f + new Vector2(16, 18), $"{(operation.IsActive ? "Stage 4 active" : "Stage 4 ready")} {ResourceLabel(operation.ResourceId)} cap {operation.UsedCapacity}/{operation.CapacityPerDay}", minWidth: 214, accent: accent);
+    }
+
+    private void DrawNpcPressureOverlay(PrototypeSnapshot snapshot)
+    {
+        var pressures = snapshot.NpcPressures.Take(3).ToArray();
+        foreach (var pressure in pressures)
+        {
+            var accent = pressure.CanContest
+                ? new Color(0.88f, 0.30f, 0.43f, 0.92f)
+                : new Color(0.62f, 0.42f, 0.58f, 0.74f);
+
+            if (pressure.RouteId is not null)
+            {
+                var route = snapshot.Routes.FirstOrDefault(route => route.Id == pressure.RouteId);
+                if (route is not null)
+                {
+                    var from = snapshot.Cities.FirstOrDefault(city => city.Id == route.FromNode);
+                    var to = snapshot.Cities.FirstOrDefault(city => city.Id == route.ToNode);
+                    if (from is not null && to is not null)
+                    {
+                        var start = PointFor(snapshot, from.X, from.Y);
+                        var end = PointFor(snapshot, to.X, to.Y);
+                        DrawDashedLine(start, end, accent, 3.0f);
+                    }
+                }
+            }
+
+            var city = snapshot.Cities.FirstOrDefault(city => city.Id == pressure.CityId);
+            if (city is null)
+            {
+                continue;
+            }
+
+            var point = PointFor(snapshot, city.X, city.Y);
+            DrawDiamond(point + new Vector2(0, -24), 8.0f, accent);
+        }
+
+        var top = pressures.FirstOrDefault();
+        if (top is not null)
+        {
+            var city = snapshot.Cities.FirstOrDefault(city => city.Id == top.CityId);
+            if (city is not null)
+            {
+                DrawMapLabel(PointFor(snapshot, city.X, city.Y) + new Vector2(18, 28), $"Stage 5 NPC {ResourceLabel(top.ResourceId)} {top.Pressure:0.00}", minWidth: 168, accent: new Color(0.88f, 0.30f, 0.43f, 0.92f));
+            }
+        }
+    }
+
+    private void DrawWarehousePressureOverlay(PrototypeSnapshot snapshot)
+    {
+        var cities = snapshot.Cities
+            .Select(city => new { City = city, Signal = TopPressureSignal(city) })
+            .Where(item => item.Signal is not null)
+            .OrderByDescending(item => item.Signal!.ShipmentPriority)
+            .ThenByDescending(item => item.Signal!.Scarcity)
+            .Take(4);
+
+        foreach (var item in cities)
+        {
+            var signal = item.Signal!;
+            var point = PointFor(snapshot, item.City.X, item.City.Y);
+            var shortfall = Math.Max(0, signal.ReorderPoint - signal.MarketStock);
+            if (shortfall <= 0 && signal.Scarcity < 0.18)
+            {
+                continue;
+            }
+
+            var accent = new Color(0.30f, 0.55f, 0.84f, 0.90f);
+            var rect = new Rect2(point + new Vector2(-17, 18), new Vector2(34, 8));
+            DrawRect(rect, new Color(0.03f, 0.04f, 0.05f, 0.78f));
+            var fill = Math.Clamp((float)(signal.ShipmentPriority / 10.0), 0.20f, 1.0f);
+            DrawRect(new Rect2(rect.Position, new Vector2(rect.Size.X * fill, rect.Size.Y)), accent);
+        }
+    }
+
+    private void DrawMiniProgress(Vector2 position, float width, decimal current, decimal target, Color color)
+    {
+        var rect = new Rect2(position, new Vector2(width, 10));
+        var progress = target <= 0m ? 1.0f : Math.Clamp((float)(current / target), 0.0f, 1.0f);
+        DrawRect(rect, new Color(0.09f, 0.10f, 0.09f, 0.96f));
+        DrawRect(new Rect2(rect.Position, new Vector2(rect.Size.X * progress, rect.Size.Y)), color);
+        DrawRect(new Rect2(rect.Position, new Vector2(rect.Size.X, 1)), color.Lightened(0.35f));
+    }
+
+    private void DrawDashedLine(Vector2 start, Vector2 end, Color color, float width)
+    {
+        var direction = end - start;
+        var length = direction.Length();
+        if (length <= 1.0f)
+        {
+            return;
+        }
+
+        var normal = direction / length;
+        const float dash = 14.0f;
+        const float gap = 9.0f;
+        for (var offset = (_flowPhase * 0.30f) % (dash + gap); offset < length; offset += dash + gap)
+        {
+            var segmentStart = start + normal * offset;
+            var segmentEnd = start + normal * Math.Min(length, offset + dash);
+            DrawLine(segmentStart, segmentEnd, color, width, true);
+        }
+    }
+
+    private void DrawDiamond(Vector2 center, float radius, Color color)
+    {
+        var points = new[]
+        {
+            center + new Vector2(0, -radius),
+            center + new Vector2(radius, 0),
+            center + new Vector2(0, radius),
+            center + new Vector2(-radius, 0)
+        };
+        DrawColoredPolygon(points, color);
+        DrawPolyline(new[] { points[0], points[1], points[2], points[3], points[0] }, new Color(0.05f, 0.035f, 0.035f, 0.85f), 1.4f, true);
     }
 
     private void DrawModeBanner(PrototypeSnapshot snapshot)
@@ -3266,6 +3639,29 @@ public partial class PrototypeMapView : Control
     private static string CityKindFor(PrototypeSnapshot snapshot, string cityId)
     {
         return snapshot.World.Nodes.FirstOrDefault(node => node.Id == cityId)?.Kind ?? "market_town";
+    }
+
+    private static PrototypeMarketSignal? TopPressureSignal(PrototypeCityView city)
+    {
+        return city.MarketSignals
+            .Where(signal => signal.DesiredStock > 0 && signal.Scarcity > 0.10)
+            .OrderByDescending(signal => signal.ShipmentPriority)
+            .ThenByDescending(signal => signal.Scarcity)
+            .ThenBy(signal => signal.ResourceId, StringComparer.Ordinal)
+            .FirstOrDefault();
+    }
+
+    private static string ResourceLabel(string resourceId)
+    {
+        var words = resourceId.Split(new[] { '_', '-' }, StringSplitOptions.RemoveEmptyEntries);
+        return words.Length == 0
+            ? resourceId
+            : string.Join(" ", words.Select(word => CultureInfo.InvariantCulture.TextInfo.ToTitleCase(word.ToLowerInvariant())));
+    }
+
+    private static string RecipeLabel(string recipeId)
+    {
+        return ResourceLabel(recipeId);
     }
 
     private static Color CityKindColor(string kind, double supplySatisfaction)

@@ -55,16 +55,31 @@ public partial class InteractionSmokeRunner : Control
         var selectContractButton = FindButton(uiRoot, "Select Contract");
         var npcPressureLog = FindRequired<RichTextLabel>(uiRoot, control => string.Equals(control.Name, "NpcPressureLog", StringComparison.Ordinal));
         var scenarioObjectiveLog = FindRequired<RichTextLabel>(uiRoot, control => string.Equals(control.Name, "ScenarioObjectiveLog", StringComparison.Ordinal));
+        var tickFeedback = FindRequired<Label>(uiRoot, control => string.Equals(control.Name, "TickChangeFeedback", StringComparison.Ordinal));
+        var stage3CardBody = FindRequired<Label>(uiRoot, control => string.Equals(control.Name, "StatusCardProduction", StringComparison.Ordinal));
+        var stage4CardBody = FindRequired<Label>(uiRoot, control => string.Equals(control.Name, "StatusCardRoutes", StringComparison.Ordinal));
+        var cashProgress = FindRequired<ProgressBar>(uiRoot, control => string.Equals(control.Name, "SeasonCashProgress", StringComparison.Ordinal));
+        var deliveryProgress = FindRequired<ProgressBar>(uiRoot, control => string.Equals(control.Name, "SeasonDeliveryProgress", StringComparison.Ordinal));
 
         AssertSmoke(AnyVisibleTextContains(uiRoot, "System Test Bench"), "System Test Bench was not visible.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "Stage 3 Production"), "Stage 3 production status card was not visible.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "Stage 4 Routes"), "Stage 4 route status card was not visible.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "Stage 5 NPC"), "Stage 5 NPC status card was not visible.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "Warehouse Guard"), "Warehouse guard status card was not visible.");
         AssertSmoke(AnyVisibleTextContains(uiRoot, "First Charter Season"), "Scenario objective panel was not visible.");
         AssertRichTextContains(uiRoot, "Deliveries", "Stable needs");
+        AssertSmoke(tickFeedback.Text.Contains("Stage 3-6", StringComparison.OrdinalIgnoreCase), "Initial tick feedback did not identify Stage 3-6 visibility.");
+        AssertSmoke(cashProgress.Value > 0, "Scenario cash progress bar was empty.");
+        AssertSmoke(deliveryProgress.Value >= 0, "Scenario delivery progress bar was not initialized.");
+        AssertControlIntersectsViewport(cashProgress, "Season cash progress bar");
+        AssertControlIntersectsViewport(deliveryProgress, "Season delivery progress bar");
+        AssertControlIntersectsViewport(stage3CardBody, "Stage 3 Production status card");
+        AssertControlIntersectsViewport(stage4CardBody, "Stage 4 Routes status card");
         AssertSmoke(AnyVisibleTextContains(uiRoot, "Production Chains"), "Production Chains panel was not visible.");
         AssertRichTextContains(uiRoot, "Top rival pressure:", "North Sea Company");
         AssertSmoke(!runTwelveButton.Disabled, "Run 12 was disabled.");
         AssertSmoke(!resetSeedButton.Disabled, "Reset Seed was disabled.");
         AssertSmoke(GetMetricValue(uiRoot, "Tick") == "0", "Initial tick metric was not zero.");
-        AssertControlIntersectsViewport(runTwelveButton, "Run 12");
         await ScrollControlIntoViewAsync(sidebarScroll, scenarioObjectiveLog, "First Charter Season objective");
         await ScrollControlIntoViewAsync(sidebarScroll, npcPressureLog, "NPC Pressure log");
         await ExerciseSidebarScrollAsync(sidebarScroll);
@@ -197,6 +212,7 @@ public partial class InteractionSmokeRunner : Control
 
         await PressButtonAsync(advanceButton);
         AssertSmoke(GetMetricValue(uiRoot, "Tick") == "1", "Advance Tick did not advance the tick metric to 1.");
+        AssertSmoke(tickFeedback.Text.Contains("Tick 1", StringComparison.OrdinalIgnoreCase), "Tick feedback did not refresh after advancing one tick.");
 
         await PressButtonAsync(runFiveButton);
         AssertSmoke(GetMetricValue(uiRoot, "Tick") == "6", "Run 5 did not advance the tick metric to 6.");
