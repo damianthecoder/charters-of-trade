@@ -180,6 +180,8 @@ public static class StarterSaveFactory
             new FogOfWarState(nodes.Take(3).Select(node => node.Id).ToArray()),
             [],
             routes.Select(route => new RoutePolicySaveState(route.Id, routePolicyResources, null)).ToArray(),
+            [],
+            [],
             null,
             FirstCharterSeason.CreateInitialState(1000m));
     }

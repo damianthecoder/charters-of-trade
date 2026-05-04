@@ -89,6 +89,21 @@ public sealed record PrototypeRouteOperationView(
     string PausedReason,
     string PolicyAction);
 
+public sealed record PrototypeRouteTransitView(
+    string Id,
+    string OperationId,
+    string RouteId,
+    string FromNode,
+    string ToNode,
+    string ResourceId,
+    int Units,
+    int DispatchedTick,
+    int ArrivalTick,
+    int RemainingTicks,
+    decimal ExpectedRevenue,
+    decimal TransportCost,
+    decimal ExpectedNet);
+
 public sealed record PrototypeRoutePolicyView(
     string RouteId,
     IReadOnlyList<string> ReservedResources,
@@ -193,6 +208,10 @@ public sealed record PrototypeSnapshot(
 
     public PrototypeRouteOperationView? ActiveRouteOperation { get; init; }
 
+    public IReadOnlyList<PrototypeRouteOperationView> ActiveRouteOperations { get; init; } = [];
+
+    public IReadOnlyList<PrototypeRouteTransitView> RouteTransits { get; init; } = [];
+
     public IReadOnlyList<PrototypeRoutePolicyView> RoutePolicies { get; init; } = [];
 
     public IReadOnlyList<PrototypeProductionChainOpportunityView> ProductionChainOpportunities { get; init; } = [];
@@ -236,6 +255,8 @@ public sealed class PrototypeSession
     private readonly List<PrototypeLedgerEntry> _ledger = [];
     private readonly Dictionary<WarehousePolicyKey, WarehousePolicyOverride> _warehousePolicyOverrides = [];
     private readonly Dictionary<string, RoutePolicy> _routePolicies = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, RouteOperationState> _activeRouteOperations = new(StringComparer.Ordinal);
+    private readonly List<RouteTransitState> _routeTransits = [];
 
     private CompanyState _company = new(1000m, 0m, 50, "merchant_league");
     private CalendarState _calendar = new(1, 1);
@@ -280,6 +301,21 @@ public sealed class PrototypeSession
             return false;
         }
 
+        var contract = contracts.First(candidate => string.Equals(candidate.Id, contractId, StringComparison.Ordinal));
+        var operation = BuildRouteOperationFromContract(contract, isActive: true);
+        if (operation is null)
+        {
+            return false;
+        }
+
+        _activeRouteOperations[operation.Id] = new RouteOperationState(
+            operation.Id,
+            operation.SourceContractId,
+            operation.RouteId,
+            operation.FromNode,
+            operation.ToNode,
+            operation.ResourceId,
+            RouteOperationUnitCap(operation.RouteId));
         _selectedContractId = contractId;
         Current = BuildSnapshot(Current.Tick);
         return true;
@@ -287,12 +323,49 @@ public sealed class PrototypeSession
 
     public bool ClearRouteOperation()
     {
-        if (_selectedContractId is null)
+        var operation = ActiveOperationForSelectedContract() ?? _activeRouteOperations.Values
+            .OrderBy(operation => operation.RouteId, StringComparer.Ordinal)
+            .ThenBy(operation => operation.Id, StringComparer.Ordinal)
+            .FirstOrDefault();
+        if (operation is null)
         {
             return false;
         }
 
-        _selectedContractId = null;
+        _activeRouteOperations.Remove(operation.Id);
+        _routeTransits.RemoveAll(transit => string.Equals(transit.OperationId, operation.Id, StringComparison.Ordinal));
+        if (string.Equals(_selectedContractId, operation.SourceContractId, StringComparison.Ordinal))
+        {
+            _selectedContractId = null;
+        }
+
+        Current = BuildSnapshot(Current.Tick);
+        return true;
+    }
+
+    public bool ClearRouteOperation(string routeId)
+    {
+        if (string.IsNullOrWhiteSpace(routeId))
+        {
+            return ClearRouteOperation();
+        }
+
+        var operation = _activeRouteOperations.Values
+            .Where(operation => string.Equals(operation.RouteId, routeId, StringComparison.Ordinal))
+            .OrderBy(operation => operation.Id, StringComparer.Ordinal)
+            .FirstOrDefault();
+        if (operation is null)
+        {
+            return false;
+        }
+
+        _activeRouteOperations.Remove(operation.Id);
+        _routeTransits.RemoveAll(transit => string.Equals(transit.OperationId, operation.Id, StringComparison.Ordinal));
+        if (string.Equals(_selectedContractId, operation.SourceContractId, StringComparison.Ordinal))
+        {
+            _selectedContractId = null;
+        }
+
         Current = BuildSnapshot(Current.Tick);
         return true;
     }
@@ -407,16 +480,16 @@ public sealed class PrototypeSession
         var nextTick = Current.Tick + 1;
         _calendar = _calendar with { DayOfYear = _calendar.DayOfYear + 1 };
         var selectedOperation = SelectedActiveRouteOperation();
-        var reservation = ReservationFor(selectedOperation);
+        var reservations = ReservationsFor(BuildActiveRouteOperations());
 
-        var productionCash = RunProduction(nextTick, reservation);
-        var logisticsCash = RunLogistics(nextTick, out var routeOperationDispatch);
+        var productionCash = RunProduction(nextTick, reservations);
+        var logisticsCash = RunLogistics(nextTick, out var routeOperationDispatches);
         var aiCash = RunAi(nextTick);
         RunCityGrowth(nextTick);
 
         var cashDelta = productionCash + logisticsCash + aiCash;
         _company = _company with { Cash = decimal.Round(_company.Cash + cashDelta, 2, MidpointRounding.AwayFromZero) };
-        UpdateScenarioObjective(nextTick, selectedOperation, routeOperationDispatch);
+        UpdateScenarioObjective(nextTick, selectedOperation, routeOperationDispatches);
 
         Current = BuildSnapshot(nextTick);
         return Current;
@@ -467,7 +540,7 @@ public sealed class PrototypeSession
         }
     }
 
-    private decimal RunProduction(int tick, ProductionReservation? reservation)
+    private decimal RunProduction(int tick, IReadOnlyList<ProductionReservation> reservations)
     {
         var cash = 0m;
         foreach (var city in _cities.OrderBy(city => city.Id, StringComparer.Ordinal))
@@ -475,7 +548,7 @@ public sealed class PrototypeSession
             var producedIds = new HashSet<string>(StringComparer.Ordinal);
             foreach (var recipe in _content.Recipes.OrderBy(recipe => recipe.Id, StringComparer.Ordinal))
             {
-                if (!CanRunInCity(city, recipe, reservation))
+                if (!CanRunInCity(city, recipe, reservations))
                 {
                     continue;
                 }
@@ -523,13 +596,18 @@ public sealed class PrototypeSession
         return cash;
     }
 
-    private decimal RunLogistics(int tick, out RouteOperationDispatchResult? routeOperationDispatch)
+    private decimal RunLogistics(int tick, out IReadOnlyList<RouteOperationDispatchResult> routeOperationDispatches)
     {
-        routeOperationDispatch = null;
-        var selectedOperation = SelectedActiveRouteOperation();
-        if (selectedOperation is not null)
+        var dispatches = new List<RouteOperationDispatchResult>();
+        var cash = ResolveRouteTransits(tick, dispatches);
+        var activeOperations = BuildActiveRouteOperations();
+
+        if (activeOperations.Count > 0)
         {
-            return ExecuteRouteOperation(tick, selectedOperation, out routeOperationDispatch);
+            cash += ChargeRouteMaintenance(tick, activeOperations);
+            cash += DispatchRouteOperations(tick, activeOperations, dispatches);
+            routeOperationDispatches = dispatches.ToArray();
+            return cash;
         }
 
         if (_selectedContractId is not null)
@@ -537,6 +615,154 @@ public sealed class PrototypeSession
             _selectedContractId = null;
         }
 
+        cash += RunAutomaticLogistics(tick);
+        routeOperationDispatches = dispatches.ToArray();
+        return cash;
+    }
+
+    private decimal ResolveRouteTransits(int tick, List<RouteOperationDispatchResult> dispatches)
+    {
+        var cash = 0m;
+        var arrivals = _routeTransits
+            .Where(transit => transit.ArrivalTick <= tick)
+            .OrderBy(transit => transit.ArrivalTick)
+            .ThenBy(transit => transit.Id, StringComparer.Ordinal)
+            .ToArray();
+
+        foreach (var transit in arrivals)
+        {
+            var destination = _cities.FirstOrDefault(city => string.Equals(city.Id, transit.ToNode, StringComparison.Ordinal));
+            if (destination is null)
+            {
+                _routeTransits.Remove(transit);
+                continue;
+            }
+
+            var demandGap = DemandGap(destination, transit.ResourceId);
+            destination.Market.Add(transit.ResourceId, transit.Units);
+            var net = RoundMoney(transit.ExpectedRevenue - transit.TransportCost);
+            var unmetServed = Math.Min(transit.Units, demandGap);
+            cash += net;
+            _ledger.Add(new PrototypeLedgerEntry(
+                tick,
+                "Logistics",
+                $"{transit.RouteId}: route operation delivered {transit.Units} {transit.ResourceId} from {CityName(transit.FromNode)} to {destination.Name}, served {unmetServed} unmet demand after {Math.Max(1, transit.ArrivalTick - transit.DispatchedTick)} days in transit",
+                net,
+                transit.RouteId));
+            dispatches.Add(new RouteOperationDispatchResult(transit.OperationId, transit.RouteId, transit.ResourceId, transit.Units, Delivered: true));
+            _routeTransits.Remove(transit);
+        }
+
+        return cash;
+    }
+
+    private decimal ChargeRouteMaintenance(int tick, IReadOnlyList<PrototypeRouteOperationView> activeOperations)
+    {
+        var cash = 0m;
+        foreach (var routeId in activeOperations.Select(operation => operation.RouteId).Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal))
+        {
+            var route = Routes.First(route => string.Equals(route.Id, routeId, StringComparison.Ordinal));
+            var cost = RouteMaintenanceCost(route);
+            cash -= cost;
+            _ledger.Add(new PrototypeLedgerEntry(
+                tick,
+                "Logistics",
+                $"{route.Id}: {RouteModeLabel(route)} route maintenance for {activeOperations.Count(operation => string.Equals(operation.RouteId, route.Id, StringComparison.Ordinal))} active operations",
+                -cost,
+                route.Id));
+        }
+
+        return cash;
+    }
+
+    private decimal DispatchRouteOperations(int tick, IReadOnlyList<PrototypeRouteOperationView> activeOperations, List<RouteOperationDispatchResult> dispatches)
+    {
+        foreach (var routeGroup in activeOperations
+            .GroupBy(operation => operation.RouteId, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal))
+        {
+            var route = Routes.First(route => string.Equals(route.Id, routeGroup.Key, StringComparison.Ordinal));
+            var capacityRemaining = EffectiveRouteCapacity(route);
+            var operations = routeGroup
+                .OrderByDescending(operation => operation.ShipmentPriority)
+                .ThenByDescending(operation => operation.ExpectedNet)
+                .ThenBy(operation => operation.Id, StringComparer.Ordinal)
+                .ToArray();
+
+            foreach (var operation in operations)
+            {
+                if (!operation.CanDispatch)
+                {
+                    _ledger.Add(new PrototypeLedgerEntry(
+                        tick,
+                        "Logistics",
+                        $"{route.Id}: route operation paused for {operation.ResourceId}: {operation.PausedReason}",
+                        0m,
+                        route.Id));
+                    dispatches.Add(new RouteOperationDispatchResult(operation.Id, operation.RouteId, operation.ResourceId, Units: 0, Delivered: false));
+                    continue;
+                }
+
+                if (capacityRemaining <= 0)
+                {
+                    _ledger.Add(new PrototypeLedgerEntry(
+                        tick,
+                        "Logistics",
+                        $"{route.Id}: route operation delayed for {operation.ResourceId}: route congested",
+                        0m,
+                        route.Id));
+                    dispatches.Add(new RouteOperationDispatchResult(operation.Id, operation.RouteId, operation.ResourceId, Units: 0, Delivered: false));
+                    continue;
+                }
+
+                var source = _cities.First(city => string.Equals(city.Id, operation.FromNode, StringComparison.Ordinal));
+                var destination = _cities.First(city => string.Equals(city.Id, operation.ToNode, StringComparison.Ordinal));
+                var units = Math.Min(operation.ExpectedUnits, Math.Min(capacityRemaining, Math.Min(ExportableWarehouseUnits(source, operation.ResourceId), DemandGap(destination, operation.ResourceId))));
+                if (units <= 0 || !source.CompanyWarehouse.TryRemove(operation.ResourceId, units))
+                {
+                    _ledger.Add(new PrototypeLedgerEntry(
+                        tick,
+                        "Logistics",
+                        $"{route.Id}: route operation paused for {operation.ResourceId}: no exportable stock",
+                        0m,
+                        route.Id));
+                    dispatches.Add(new RouteOperationDispatchResult(operation.Id, operation.RouteId, operation.ResourceId, Units: 0, Delivered: false));
+                    continue;
+                }
+
+                capacityRemaining -= units;
+                var transitDays = RouteTransitDays(route, TotalRequestedUnits(operations), EffectiveRouteCapacity(route));
+                var price = PriceFor(destination, operation.ResourceId);
+                var revenue = RoundMoney(price * units);
+                var transportCost = RoundMoney(route.CostPerUnit * units);
+                var transit = new RouteTransitState(
+                    RouteTransitId(operation.Id, tick, _routeTransits.Count(transit => transit.DispatchedTick == tick && string.Equals(transit.OperationId, operation.Id, StringComparison.Ordinal))),
+                    operation.Id,
+                    operation.RouteId,
+                    operation.FromNode,
+                    operation.ToNode,
+                    operation.ResourceId,
+                    units,
+                    tick,
+                    tick + transitDays,
+                    revenue,
+                    transportCost);
+                _routeTransits.Add(transit);
+                _ledger.Add(new PrototypeLedgerEntry(
+                    tick,
+                    "Logistics",
+                    $"{route.Id}: dispatched {units} {operation.ResourceId} from {source.Name} to {destination.Name}; arrives tick {transit.ArrivalTick} via {RouteModeLabel(route)}",
+                    0m,
+                    route.Id));
+                dispatches.Add(new RouteOperationDispatchResult(operation.Id, operation.RouteId, operation.ResourceId, units, Delivered: false));
+            }
+        }
+
+        return 0m;
+    }
+
+    private decimal RunAutomaticLogistics(int tick)
+    {
         var charter = _cities[0];
         var prices = PricesFor(charter);
         var needsByResource = _needs.ToDictionary(need => need.ResourceId, StringComparer.Ordinal);
@@ -586,68 +812,11 @@ public sealed class PrototypeSession
         return cash;
     }
 
-    private decimal ExecuteRouteOperation(int tick, PrototypeRouteOperationView operation, out RouteOperationDispatchResult? dispatch)
-    {
-        dispatch = null;
-        var route = Routes.FirstOrDefault(route => route.Id == operation.RouteId);
-        var source = _cities.FirstOrDefault(city => city.Id == operation.FromNode);
-        var destination = _cities.FirstOrDefault(city => city.Id == operation.ToNode);
-        if (route is null || source is null || destination is null)
-        {
-            return 0m;
-        }
-
-        if (!operation.CanDispatch)
-        {
-            _ledger.Add(new PrototypeLedgerEntry(
-                tick,
-                "Logistics",
-                $"{route.Id}: route operation paused for {operation.ResourceId}: {operation.PausedReason}",
-                0m,
-                route.Id));
-            dispatch = new RouteOperationDispatchResult(operation.Id, operation.RouteId, operation.ResourceId, Units: 0, Delivered: false);
-            return 0m;
-        }
-
-        var demandGap = DemandGap(destination, operation.ResourceId);
-        var units = Math.Min(
-            operation.ExpectedUnits,
-            Math.Min(ExportableWarehouseUnits(source, operation.ResourceId), Math.Min(route.CapacityPerDay, demandGap)));
-        if (units <= 0 || !source.CompanyWarehouse.TryRemove(operation.ResourceId, units))
-        {
-            _ledger.Add(new PrototypeLedgerEntry(
-                tick,
-                "Logistics",
-                $"{route.Id}: route operation paused for {operation.ResourceId}: no exportable stock",
-                0m,
-                route.Id));
-            dispatch = new RouteOperationDispatchResult(operation.Id, operation.RouteId, operation.ResourceId, Units: 0, Delivered: false);
-            return 0m;
-        }
-
-        var prices = PricesFor(destination);
-        prices.TryGetValue(operation.ResourceId, out var price);
-        destination.Market.Add(operation.ResourceId, units);
-
-        var revenue = price * units;
-        var transportCost = route.CostPerUnit * units;
-        var net = RoundMoney(revenue - transportCost);
-        var unmetServed = Math.Min(units, demandGap);
-        _ledger.Add(new PrototypeLedgerEntry(
-            tick,
-            "Logistics",
-            $"{route.Id}: route operation delivered {units} {operation.ResourceId} from {source.Name} to {destination.Name}, served {unmetServed} unmet demand",
-            net,
-            route.Id));
-        dispatch = new RouteOperationDispatchResult(operation.Id, operation.RouteId, operation.ResourceId, units, Delivered: true);
-        return net;
-    }
-
     private decimal RunAi(int tick)
     {
         var contracts = BuildAvailableContracts();
         var routeOperations = BuildRouteOperationCandidates(contracts);
-        var activeOperation = BuildActiveRouteOperation();
+        var activeOperation = BuildActiveRouteOperation(BuildActiveRouteOperations());
         var productionChains = BuildProductionChainOpportunities();
         var pressures = BuildNpcPressures(productionChains, routeOperations, activeOperation);
         var topPressure = pressures.FirstOrDefault();
@@ -687,7 +856,7 @@ public sealed class PrototypeSession
         }
     }
 
-    private void UpdateScenarioObjective(int tick, PrototypeRouteOperationView? selectedOperation, RouteOperationDispatchResult? dispatch)
+    private void UpdateScenarioObjective(int tick, PrototypeRouteOperationView? selectedOperation, IReadOnlyList<RouteOperationDispatchResult> dispatches)
     {
         if (!string.Equals(_scenarioObjective.EndReason, FirstCharterSeason.InProgress, StringComparison.Ordinal))
         {
@@ -696,13 +865,15 @@ public sealed class PrototypeSession
 
         var completedCharterIds = _scenarioObjective.CompletedCharterIds.ToHashSet(StringComparer.Ordinal);
         var completedResources = _scenarioObjective.CompletedCharterResourceIds.ToHashSet(StringComparer.Ordinal);
-        if (selectedOperation is not null
-            && dispatch is not null
-            && dispatch.Delivered
-            && dispatch.Units > 0
-            && string.Equals(dispatch.OperationId, selectedOperation.Id, StringComparison.Ordinal)
-            && string.Equals(dispatch.RouteId, selectedOperation.RouteId, StringComparison.Ordinal)
-            && string.Equals(dispatch.ResourceId, selectedOperation.ResourceId, StringComparison.Ordinal))
+        var selectedDispatch = selectedOperation is null
+            ? null
+            : dispatches.FirstOrDefault(dispatch =>
+                dispatch.Delivered
+                && dispatch.Units > 0
+                && string.Equals(dispatch.OperationId, selectedOperation.Id, StringComparison.Ordinal)
+                && string.Equals(dispatch.RouteId, selectedOperation.RouteId, StringComparison.Ordinal)
+                && string.Equals(dispatch.ResourceId, selectedOperation.ResourceId, StringComparison.Ordinal));
+        if (selectedOperation is not null && selectedDispatch is not null)
         {
             completedCharterIds.Add($"{tick}:{selectedOperation.Id}");
             completedResources.Add(selectedOperation.ResourceId);
@@ -844,10 +1015,11 @@ public sealed class PrototypeSession
         var prices = _economy.CalculatePrices(_content.Resources, charter.Market, _needs);
         var contracts = BuildAvailableContracts();
         var operationCandidates = BuildRouteOperationCandidates(contracts);
-        var activeOperation = BuildActiveRouteOperation();
+        var activeOperations = BuildActiveRouteOperations();
+        var activeOperation = BuildActiveRouteOperation(activeOperations);
         var productionChains = BuildProductionChainOpportunities();
         var npcPressures = BuildNpcPressures(productionChains, operationCandidates, activeOperation);
-        var selectedContractId = activeOperation is not null
+        var selectedContractId = activeOperation is not null && activeOperations.Any(operation => string.Equals(operation.SourceContractId, _selectedContractId, StringComparison.Ordinal))
             ? _selectedContractId
             : null;
         _selectedContractId = selectedContractId;
@@ -888,6 +1060,8 @@ public sealed class PrototypeSession
             SelectedContractId = selectedContractId,
             RouteOperationCandidates = operationCandidates,
             ActiveRouteOperation = activeOperation,
+            ActiveRouteOperations = activeOperations,
+            RouteTransits = BuildRouteTransitViews(tick),
             RoutePolicies = BuildRoutePolicyViews(),
             ProductionChainOpportunities = productionChains,
             NpcPressures = npcPressures,
@@ -964,39 +1138,32 @@ public sealed class PrototypeSession
 
     private PrototypeRouteOperationView? SelectedActiveRouteOperation()
     {
-        return _selectedContractId is null ? null : BuildActiveRouteOperation();
-    }
-
-    private PrototypeRouteOperationView? BuildActiveRouteOperation()
-    {
         if (_selectedContractId is null)
         {
             return null;
         }
 
-        var parsed = TryParseRouteContractId(_selectedContractId);
-        if (parsed is null)
-        {
-            return null;
-        }
+        return BuildActiveRouteOperations()
+            .FirstOrDefault(operation => string.Equals(operation.SourceContractId, _selectedContractId, StringComparison.Ordinal));
+    }
 
-        var route = Routes.FirstOrDefault(route => route.Id == parsed.Value.RouteId);
-        if (route is null || !IsKnownRouteResource(parsed.Value.ResourceId))
-        {
-            return null;
-        }
+    private PrototypeRouteOperationView? BuildActiveRouteOperation(IReadOnlyList<PrototypeRouteOperationView> activeOperations)
+    {
+        return activeOperations.FirstOrDefault(operation => string.Equals(operation.SourceContractId, _selectedContractId, StringComparison.Ordinal))
+            ?? activeOperations.FirstOrDefault();
+    }
 
-        var charter = _cities[0];
-        if (route.FromNode != charter.Id && route.ToNode != charter.Id)
-        {
-            return null;
-        }
+    private IReadOnlyList<PrototypeRouteOperationView> BuildActiveRouteOperations()
+    {
+        var operations = _activeRouteOperations.Values
+            .OrderBy(operation => operation.RouteId, StringComparer.Ordinal)
+            .ThenBy(operation => operation.Id, StringComparer.Ordinal)
+            .Select(BuildRouteOperationFromState)
+            .Where(operation => operation is not null)
+            .Select(operation => operation!)
+            .ToArray();
 
-        var sourceId = route.FromNode == charter.Id ? route.ToNode : route.FromNode;
-        var source = _cities.FirstOrDefault(city => city.Id == sourceId);
-        return source is null
-            ? null
-            : BuildRouteOperation(route, source, charter, parsed.Value.ResourceId, isActive: true);
+        return AllocateRouteCapacity(operations);
     }
 
     private PrototypeRouteOperationView? BuildRouteOperationFromContract(PrototypeRouteContractView contract, bool isActive)
@@ -1009,17 +1176,28 @@ public sealed class PrototypeSession
             : BuildRouteOperation(route, source, destination, contract.ResourceId, isActive);
     }
 
+    private PrototypeRouteOperationView? BuildRouteOperationFromState(RouteOperationState state)
+    {
+        var route = Routes.FirstOrDefault(route => string.Equals(route.Id, state.RouteId, StringComparison.Ordinal));
+        var source = _cities.FirstOrDefault(city => string.Equals(city.Id, state.FromNode, StringComparison.Ordinal));
+        var destination = _cities.FirstOrDefault(city => string.Equals(city.Id, state.ToNode, StringComparison.Ordinal));
+        return route is null || source is null || destination is null
+            ? null
+            : BuildRouteOperation(route, source, destination, state.ResourceId, isActive: true, state.UnitsPerDispatch);
+    }
+
     private PrototypeRouteOperationView BuildRouteOperation(
         TradeRoute route,
         RuntimeCity source,
         RuntimeCity destination,
         string resourceId,
-        bool isActive)
+        bool isActive,
+        int? unitsPerDispatch = null)
     {
         var allowed = RouteAllowsResource(route.Id, resourceId);
         var exportable = ExportableWarehouseUnits(source, resourceId);
         var demandGap = DemandGap(destination, resourceId);
-        var dispatchCap = Math.Min(route.CapacityPerDay, ContractUnits(route));
+        var dispatchCap = Math.Min(EffectiveRouteCapacity(route), unitsPerDispatch ?? ContractUnits(route));
         var candidateUnits = Math.Min(dispatchCap, Math.Min(exportable, demandGap));
         var price = PriceFor(destination, resourceId);
         var expectedRevenue = RoundMoney(price * candidateUnits);
@@ -1039,10 +1217,10 @@ public sealed class PrototypeSession
             resourceId,
             isActive,
             canDispatch,
-            route.CapacityPerDay,
+            EffectiveRouteCapacity(route),
             candidateUnits,
             usedCapacity,
-            Math.Max(0, route.CapacityPerDay - usedCapacity),
+            Math.Max(0, EffectiveRouteCapacity(route) - usedCapacity),
             ShipmentPriority(destination, resourceId) + RoutePriorityBoost(route.Id, resourceId),
             expectedRevenue,
             transportCost,
@@ -1051,6 +1229,88 @@ public sealed class PrototypeSession
             canDispatch ? "ready" : "paused",
             pausedReason,
             ContractPolicyAction(route.Id, destination, resourceId));
+    }
+
+    private IReadOnlyList<PrototypeRouteOperationView> AllocateRouteCapacity(IReadOnlyList<PrototypeRouteOperationView> operations)
+    {
+        var allocated = new List<PrototypeRouteOperationView>();
+        foreach (var routeGroup in operations
+            .GroupBy(operation => operation.RouteId, StringComparer.Ordinal)
+            .OrderBy(group => group.Key, StringComparer.Ordinal))
+        {
+            var route = Routes.First(route => string.Equals(route.Id, routeGroup.Key, StringComparison.Ordinal));
+            var capacityRemaining = EffectiveRouteCapacity(route);
+            foreach (var operation in routeGroup
+                .OrderByDescending(operation => operation.ShipmentPriority)
+                .ThenByDescending(operation => operation.ExpectedNet)
+                .ThenBy(operation => operation.Id, StringComparer.Ordinal))
+            {
+                if (!operation.CanDispatch)
+                {
+                    allocated.Add(operation with
+                    {
+                        UsedCapacity = 0,
+                        FreeCapacity = capacityRemaining
+                    });
+                    continue;
+                }
+
+                if (capacityRemaining <= 0)
+                {
+                    allocated.Add(operation with
+                    {
+                        CanDispatch = false,
+                        ExpectedUnits = 0,
+                        UsedCapacity = 0,
+                        FreeCapacity = 0,
+                        UnmetDemandServed = 0,
+                        Status = "paused",
+                        PausedReason = "route congested"
+                    });
+                    continue;
+                }
+
+                var allocatedUnits = Math.Min(operation.ExpectedUnits, capacityRemaining);
+                capacityRemaining -= allocatedUnits;
+                allocated.Add(operation with
+                {
+                    ExpectedUnits = allocatedUnits,
+                    UsedCapacity = allocatedUnits,
+                    FreeCapacity = Math.Max(0, capacityRemaining),
+                    UnmetDemandServed = Math.Min(operation.UnmetDemandServed, allocatedUnits),
+                    Status = allocatedUnits < operation.ExpectedUnits ? "delayed" : operation.Status,
+                    PausedReason = allocatedUnits < operation.ExpectedUnits ? "capacity constrained" : operation.PausedReason
+                });
+            }
+        }
+
+        return allocated
+            .OrderByDescending(operation => operation.ShipmentPriority)
+            .ThenByDescending(operation => operation.ExpectedNet)
+            .ThenBy(operation => operation.Id, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private IReadOnlyList<PrototypeRouteTransitView> BuildRouteTransitViews(int tick)
+    {
+        return _routeTransits
+            .OrderBy(transit => transit.ArrivalTick)
+            .ThenBy(transit => transit.Id, StringComparer.Ordinal)
+            .Select(transit => new PrototypeRouteTransitView(
+                transit.Id,
+                transit.OperationId,
+                transit.RouteId,
+                transit.FromNode,
+                transit.ToNode,
+                transit.ResourceId,
+                transit.Units,
+                transit.DispatchedTick,
+                transit.ArrivalTick,
+                Math.Max(0, transit.ArrivalTick - tick),
+                transit.ExpectedRevenue,
+                transit.TransportCost,
+                RoundMoney(transit.ExpectedRevenue - transit.TransportCost)))
+            .ToArray();
     }
 
     private IReadOnlyList<PrototypeMarketSignal> BuildMarketSignals(RuntimeCity city)
@@ -1503,23 +1763,24 @@ public sealed class PrototypeSession
             : $"source {bottleneck} not local";
     }
 
-    private ProductionReservation? ReservationFor(PrototypeRouteOperationView? operation)
+    private IReadOnlyList<ProductionReservation> ReservationsFor(IReadOnlyList<PrototypeRouteOperationView> operations)
     {
-        if (operation is null || string.Equals(operation.PausedReason, "blocked cargo", StringComparison.Ordinal))
-        {
-            return null;
-        }
+        return operations
+            .Where(operation => operation.CanDispatch)
+            .Select(operation =>
+            {
+                var source = _cities.FirstOrDefault(city => city.Id == operation.FromNode);
+                if (source is null)
+                {
+                    return null;
+                }
 
-        var route = Routes.FirstOrDefault(route => route.Id == operation.RouteId);
-        var source = _cities.FirstOrDefault(city => city.Id == operation.FromNode);
-        if (route is null || source is null)
-        {
-            return null;
-        }
-
-        var dispatchCap = Math.Min(route.CapacityPerDay, ContractUnits(route));
-        var amount = Math.Min(ExportableWarehouseUnits(source, operation.ResourceId), dispatchCap);
-        return amount <= 0 ? null : new ProductionReservation(source.Id, operation.ResourceId, amount);
+                var amount = Math.Min(ExportableWarehouseUnits(source, operation.ResourceId), Math.Max(1, operation.ExpectedUnits));
+                return amount <= 0 ? null : new ProductionReservation(source.Id, operation.ResourceId, amount);
+            })
+            .Where(reservation => reservation is not null)
+            .Select(reservation => reservation!)
+            .ToArray();
     }
 
     private int DemandGap(RuntimeCity city, string resourceId)
@@ -1574,6 +1835,31 @@ public sealed class PrototypeSession
         return $"{routeId}:{fromNode}->{toNode}:{resourceId}";
     }
 
+    private static string RouteTransitId(string operationId, int tick, int sequence)
+    {
+        return $"{operationId}:dispatch-{tick:0000}-{sequence:00}";
+    }
+
+    private int RouteOperationUnitCap(string routeId)
+    {
+        var route = Routes.FirstOrDefault(route => string.Equals(route.Id, routeId, StringComparison.Ordinal));
+        return route is null
+            ? 1
+            : Math.Min(EffectiveRouteCapacity(route), ContractUnits(route));
+    }
+
+    private RouteOperationState? ActiveOperationForSelectedContract()
+    {
+        return _selectedContractId is null
+            ? null
+            : _activeRouteOperations.Values.FirstOrDefault(operation => string.Equals(operation.SourceContractId, _selectedContractId, StringComparison.Ordinal));
+    }
+
+    private string CityName(string cityId)
+    {
+        return _cities.FirstOrDefault(city => string.Equals(city.Id, cityId, StringComparison.Ordinal))?.Name ?? cityId;
+    }
+
     private SaveGame BuildSave(IReadOnlyList<MarketPrice> prices, string? selectedContractId)
     {
         var priceState = prices.ToDictionary(price => price.ResourceId, price => price.Price, StringComparer.Ordinal);
@@ -1619,6 +1905,8 @@ public sealed class PrototypeSession
                     ModeForSave(kvp.Value.Mode)))
                 .ToArray(),
             BuildRouteSavePolicies(),
+            BuildRouteOperationSaves(),
+            BuildRouteTransitSaves(),
             selectedContractId,
             _scenarioObjective);
     }
@@ -1642,6 +1930,40 @@ public sealed class PrototypeSession
                 policy.RouteId,
                 policy.ReservedResources.Order(StringComparer.Ordinal).ToArray(),
                 policy.PriorityResourceId))
+            .ToArray();
+    }
+
+    private IReadOnlyList<RouteOperationSaveState> BuildRouteOperationSaves()
+    {
+        return _activeRouteOperations.Values
+            .OrderBy(operation => operation.Id, StringComparer.Ordinal)
+            .Select(operation => new RouteOperationSaveState(
+                operation.Id,
+                operation.SourceContractId,
+                operation.RouteId,
+                operation.FromNode,
+                operation.ToNode,
+                operation.ResourceId,
+                operation.UnitsPerDispatch))
+            .ToArray();
+    }
+
+    private IReadOnlyList<RouteTransitSaveState> BuildRouteTransitSaves()
+    {
+        return _routeTransits
+            .OrderBy(transit => transit.Id, StringComparer.Ordinal)
+            .Select(transit => new RouteTransitSaveState(
+                transit.Id,
+                transit.OperationId,
+                transit.RouteId,
+                transit.FromNode,
+                transit.ToNode,
+                transit.ResourceId,
+                transit.Units,
+                transit.DispatchedTick,
+                transit.ArrivalTick,
+                transit.ExpectedRevenue,
+                transit.TransportCost))
             .ToArray();
     }
 
@@ -1818,6 +2140,42 @@ public sealed class PrototypeSession
         return Math.Max(1, Math.Min(3, route.CapacityPerDay / 4));
     }
 
+    private static int EffectiveRouteCapacity(TradeRoute route)
+    {
+        return string.Equals(route.Mode, "coastal", StringComparison.Ordinal)
+            ? Math.Max(route.CapacityPerDay, route.CapacityPerDay + Math.Max(1, route.CapacityPerDay / 4))
+            : route.CapacityPerDay;
+    }
+
+    private static int RouteTransitDays(TradeRoute route, int requestedUnits, int effectiveCapacity)
+    {
+        var congestionDelay = requestedUnits > effectiveCapacity
+            ? Math.Min(3, (int)Math.Ceiling((requestedUnits - effectiveCapacity) / (double)Math.Max(1, effectiveCapacity)))
+            : 0;
+        var modeDelay = string.Equals(route.Mode, "coastal", StringComparison.Ordinal) ? 1 : 0;
+        return Math.Max(1, route.LeadDays + modeDelay + congestionDelay);
+    }
+
+    private static decimal RouteMaintenanceCost(TradeRoute route)
+    {
+        var baseCost = string.Equals(route.Mode, "coastal", StringComparison.Ordinal)
+            ? 1.20m + route.CapacityPerDay * 0.03m
+            : 0.60m + route.CapacityPerDay * 0.02m;
+        return RoundMoney(baseCost);
+    }
+
+    private static string RouteModeLabel(TradeRoute route)
+    {
+        return string.Equals(route.Mode, "coastal", StringComparison.Ordinal)
+            ? "port"
+            : "road";
+    }
+
+    private static int TotalRequestedUnits(IEnumerable<PrototypeRouteOperationView> operations)
+    {
+        return operations.Where(operation => operation.CanDispatch).Sum(operation => Math.Max(0, operation.ExpectedUnits));
+    }
+
     private static int SafetyStockFor(MarketNeed? need)
     {
         if (need is null)
@@ -1903,23 +2261,23 @@ public sealed class PrototypeSession
         return consumed;
     }
 
-    private bool CanRunInCity(RuntimeCity city, RecipeDef recipe, ProductionReservation? reservation)
+    private bool CanRunInCity(RuntimeCity city, RecipeDef recipe, IReadOnlyList<ProductionReservation> reservations)
     {
         if (recipe.Inputs.Count == 0)
         {
             return recipe.Outputs.Any(output => city.CompanyWarehouse.Get(output.ResourceId) > 0 || city.Market.Get(output.ResourceId) > 0);
         }
 
-        return recipe.Inputs.All(input => AvailableForProduction(city, input.ResourceId, reservation) >= input.Amount);
+        return recipe.Inputs.All(input => AvailableForProduction(city, input.ResourceId, reservations) >= input.Amount);
     }
 
-    private int AvailableForProduction(RuntimeCity city, string resourceId, ProductionReservation? reservation)
+    private int AvailableForProduction(RuntimeCity city, string resourceId, IReadOnlyList<ProductionReservation> reservations)
     {
         var stock = ExportableWarehouseUnits(city, resourceId);
-        if (reservation is not null && reservation.CityId == city.Id && reservation.ResourceId == resourceId)
-        {
-            stock = Math.Max(0, stock - reservation.Amount);
-        }
+        var reserved = reservations
+            .Where(reservation => reservation.CityId == city.Id && reservation.ResourceId == resourceId)
+            .Sum(reservation => reservation.Amount);
+        stock = Math.Max(0, stock - reserved);
 
         return stock;
     }
@@ -2168,6 +2526,28 @@ public sealed class PrototypeSession
     private sealed record WarehousePolicy(int SafetyStock, int ReorderPoint, bool IsOverride, string Mode);
 
     private sealed record RoutePolicy(string RouteId, IReadOnlyList<string> ReservedResources, string? PriorityResourceId);
+
+    private sealed record RouteOperationState(
+        string Id,
+        string SourceContractId,
+        string RouteId,
+        string FromNode,
+        string ToNode,
+        string ResourceId,
+        int UnitsPerDispatch);
+
+    private sealed record RouteTransitState(
+        string Id,
+        string OperationId,
+        string RouteId,
+        string FromNode,
+        string ToNode,
+        string ResourceId,
+        int Units,
+        int DispatchedTick,
+        int ArrivalTick,
+        decimal ExpectedRevenue,
+        decimal TransportCost);
 
     private sealed record RouteOperationDispatchResult(string OperationId, string RouteId, string ResourceId, int Units, bool Delivered);
 

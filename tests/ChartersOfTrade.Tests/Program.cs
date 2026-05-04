@@ -31,6 +31,9 @@ var tests = new (string Name, Action Run)[]
     ("prototype selected route contract stays deterministic", PrototypeSelectedRouteContractStaysDeterministic),
     ("prototype route operations are deterministic", PrototypeRouteOperationsAreDeterministic),
     ("prototype route operation selection exposes active state", PrototypeRouteOperationSelectionExposesActiveState),
+    ("prototype route operations support active network", PrototypeRouteOperationsSupportActiveNetwork),
+    ("prototype route operations create transit queue", PrototypeRouteOperationsCreateTransitQueue),
+    ("prototype route operation stop prevents selected objective credit", PrototypeRouteOperationStopPreventsSelectedObjectiveCredit),
     ("prototype route operation pauses when cargo is blocked", PrototypeRouteOperationPausesWhenCargoIsBlocked),
     ("prototype scenario objective is deterministic", PrototypeScenarioObjectiveIsDeterministic),
     ("prototype scenario objective counts selected deliveries", PrototypeScenarioObjectiveCountsSelectedDeliveries),
@@ -58,6 +61,8 @@ var tests = new (string Name, Action Run)[]
     ("save-load-save preserves hash", SaveLoadSavePreservesHash),
     ("warehouse policy save-load preserves hash", WarehousePolicySaveLoadPreservesHash),
     ("scenario objective save-load preserves hash", ScenarioObjectiveSaveLoadPreservesHash),
+    ("route operation save-load preserves hash", RouteOperationSaveLoadPreservesHash),
+    ("route transit validation rejects invalid state", RouteTransitValidationRejectsInvalidState),
     ("scenario objective validation rejects invalid state", ScenarioObjectiveValidationRejectsInvalidState),
     ("route policy save validation rejects orphan priority", RoutePolicySaveValidationRejectsOrphanPriority),
     ("save load rejects negative stock", SaveLoadRejectsNegativeStock),
@@ -752,6 +757,84 @@ static void PrototypeRouteOperationSelectionExposesActiveState()
     AssertTrue(session.Current.SaveHash != hashWithOperation, "Clearing the operation should change the state hash.");
 }
 
+static void PrototypeRouteOperationsSupportActiveNetwork()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(424242);
+    var contracts = session.Current.AvailableContracts
+        .Where(contract => contract.ExpectedNet > 0m)
+        .GroupBy(contract => contract.RouteId, StringComparer.Ordinal)
+        .Select(group => group.OrderByDescending(contract => contract.ShipmentPriority).ThenByDescending(contract => contract.ExpectedNet).First())
+        .Take(3)
+        .ToArray();
+
+    AssertTrue(contracts.Length >= 2, "Expected seed 424242 to expose contracts on at least two routes.");
+    var initialHash = session.Current.SaveHash;
+    foreach (var contract in contracts)
+    {
+        AssertTrue(session.SelectRouteContract(contract.Id), $"Expected contract {contract.Id} to activate.");
+    }
+
+    AssertEqual(contracts[^1].Id, session.Current.SelectedContractId);
+    AssertTrue(session.Current.ActiveRouteOperations.Count >= 2, "Expected multiple active route operations.");
+    AssertTrue(session.Current.SaveHash != initialHash, "The active route-operation network should affect the state hash.");
+    foreach (var contract in contracts)
+    {
+        AssertTrue(
+            session.Current.ActiveRouteOperations.Any(operation => operation.SourceContractId == contract.Id),
+            $"Expected active operation for {contract.Id}.");
+    }
+
+    var routeIds = session.Current.ActiveRouteOperations.Select(operation => operation.RouteId).Distinct(StringComparer.Ordinal).ToArray();
+    AssertTrue(routeIds.Length >= 2, "Expected active operations to span multiple routes.");
+    AssertTrue(session.ClearRouteOperation(routeIds[0]), "Expected route-scoped stop to remove one active operation.");
+    AssertTrue(session.Current.ActiveRouteOperations.All(operation => operation.RouteId != routeIds[0]), "Expected only the selected route operation to stop.");
+    AssertTrue(session.Current.ActiveRouteOperations.Count >= 1, "Stopping one route should leave the rest of the network active.");
+}
+
+static void PrototypeRouteOperationsCreateTransitQueue()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(20260429);
+    var contract = FindContract(session.Current, "Expected seed 20260429 to expose a profitable wood route operation.", candidate => candidate.ResourceId == "wood" && candidate.ExpectedNet > 0m);
+
+    AssertTrue(session.SelectRouteContract(contract.Id), "Expected route contract selection to start an operation.");
+    var dispatched = session.AdvanceTick();
+    AssertTrue(dispatched.RouteTransits.Any(transit => transit.OperationId == dispatched.ActiveRouteOperation?.Id), "Expected dispatch to create in-transit cargo.");
+    AssertTrue(dispatched.Ledger.Any(entry => entry.Tick == dispatched.Tick
+        && entry.Category == "Logistics"
+        && entry.RelatedId == contract.RouteId
+        && entry.Message.Contains("dispatched", StringComparison.Ordinal)
+        && entry.Message.Contains("arrives tick", StringComparison.Ordinal)), "Expected dispatch ledger entry to explain transit timing.");
+
+    var delivery = AdvanceUntilRouteOperationDelivery(session, contract.RouteId, contract.ResourceId, maxTicks: 8);
+    AssertTrue(delivery.Snapshot.RouteTransits.All(transit => transit.ArrivalTick > delivery.Snapshot.Tick), "Delivered transits should leave the queue.");
+    AssertTrue(delivery.Delivery.Message.Contains("days in transit", StringComparison.Ordinal), "Delivery ledger should explain transit delay.");
+}
+
+static void PrototypeRouteOperationStopPreventsSelectedObjectiveCredit()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(424242);
+    var contracts = session.Current.AvailableContracts
+        .Where(contract => contract.ExpectedNet > 0m)
+        .GroupBy(contract => contract.RouteId, StringComparer.Ordinal)
+        .Select(group => group.OrderByDescending(contract => contract.ShipmentPriority).ThenByDescending(contract => contract.ExpectedNet).First())
+        .Take(2)
+        .ToArray();
+
+    AssertTrue(contracts.Length >= 2, "Expected two route operations for selected-credit regression coverage.");
+    AssertTrue(session.SelectRouteContract(contracts[0].Id), "Expected first operation activation.");
+    AssertTrue(session.SelectRouteContract(contracts[1].Id), "Expected second operation activation.");
+    AssertTrue(session.ClearRouteOperation(contracts[1].RouteId), "Expected stopping the selected route operation to succeed.");
+
+    var completedBefore = session.Current.ScenarioObjective.CompletedCharters;
+    for (var i = 0; i < 6; i++)
+    {
+        session.AdvanceTick();
+    }
+
+    AssertTrue(session.Current.ActiveRouteOperations.Count > 0, "Expected another active operation to remain after route-scoped stop.");
+    AssertEqual(completedBefore, session.Current.ScenarioObjective.CompletedCharters);
+}
+
 static void PrototypeRouteOperationPausesWhenCargoIsBlocked()
 {
     var session = new SimulationBridge().CreatePrototypeSession(424242);
@@ -1204,6 +1287,107 @@ static void ScenarioObjectiveSaveLoadPreservesHash()
     AssertTrue(firstHash != SaveCodec.ComputeStateHash(save), "Scenario objective progress should affect state hash.");
     AssertEqual(FirstCharterSeason.InProgress, loaded.ScenarioObjective.EndReason);
     AssertEqual(1, loaded.ScenarioObjective.CompletedCharterIds.Count);
+}
+
+static void RouteOperationSaveLoadPreservesHash()
+{
+    var content = GameContentLoader.LoadFromDirectory(ContentPathResolver.FindContentDirectory());
+    var snapshot = new SimulationBridge().CreateNewGame(424242);
+    var routes = RoutePlanner.FromWorld(snapshot.World);
+    var market = StarterScenarioFactory.CreateInitialMarket(content.Resources);
+    var prices = new EconomyTick().CalculatePrices(content.Resources, market, StarterScenarioFactory.CreateNeeds(content.Resources));
+    var route = routes[0];
+    var operationId = $"{route.Id}:{route.FromNode}->{route.ToNode}:grain";
+    var save = StarterSaveFactory.Create(424242, snapshot.World.WorldGenVersion, content.ContentHash, snapshot.World.Nodes, routes, content.Resources, market, prices) with
+    {
+        RouteOperations =
+        [
+            new RouteOperationSaveState(operationId, $"{route.Id}:grain", route.Id, route.FromNode, route.ToNode, "grain", UnitsPerDispatch: 2)
+        ],
+        RouteTransits =
+        [
+            new RouteTransitSaveState($"{operationId}:dispatch-0001-00", operationId, route.Id, route.FromNode, route.ToNode, "grain", Units: 2, DispatchedTick: 1, ArrivalTick: 1 + route.LeadDays, ExpectedRevenue: 20m, TransportCost: 3m)
+        ],
+        PendingRouteContractId = $"{route.Id}:grain"
+    };
+
+    var firstHash = SaveCodec.ComputeStateHash(save);
+    var loaded = SaveCodec.Deserialize(SaveCodec.Serialize(save));
+    var secondHash = SaveCodec.ComputeStateHash(loaded);
+
+    AssertEqual(firstHash, secondHash);
+    AssertTrue(firstHash != SaveCodec.ComputeStateHash(save with { RouteOperations = [], RouteTransits = [], PendingRouteContractId = null }), "Route operations and transit queue should affect state hash.");
+    AssertEqual(1, loaded.RouteOperations.Count);
+    AssertEqual(1, loaded.RouteTransits.Count);
+}
+
+static void RouteTransitValidationRejectsInvalidState()
+{
+    var content = GameContentLoader.LoadFromDirectory(ContentPathResolver.FindContentDirectory());
+    var snapshot = new SimulationBridge().CreateNewGame(424242);
+    var routes = RoutePlanner.FromWorld(snapshot.World);
+    var market = StarterScenarioFactory.CreateInitialMarket(content.Resources);
+    var prices = new EconomyTick().CalculatePrices(content.Resources, market, StarterScenarioFactory.CreateNeeds(content.Resources));
+    var route = routes[0];
+    var operationId = $"{route.Id}:{route.FromNode}->{route.ToNode}:grain";
+    var save = StarterSaveFactory.Create(424242, snapshot.World.WorldGenVersion, content.ContentHash, snapshot.World.Nodes, routes, content.Resources, market, prices) with
+    {
+        RouteOperations =
+        [
+            new RouteOperationSaveState(operationId, $"{route.Id}:grain", route.Id, route.FromNode, route.ToNode, "grain", UnitsPerDispatch: 2)
+        ],
+        RouteTransits =
+        [
+            new RouteTransitSaveState($"{operationId}:dispatch-0001-00", operationId, route.Id, route.FromNode, route.ToNode, "grain", Units: 0, DispatchedTick: 2, ArrivalTick: 2, ExpectedRevenue: -1m, TransportCost: -1m)
+        ]
+    };
+
+    try
+    {
+        SaveCodec.Serialize(save);
+        throw new InvalidOperationException("Expected save validation to reject invalid transit state.");
+    }
+    catch (SaveValidationException ex)
+    {
+        AssertTrue(ex.Errors.Any(error => error.Contains("units must be positive", StringComparison.Ordinal)), "Expected transit units validation error.");
+        AssertTrue(ex.Errors.Any(error => error.Contains("arrivalTick must be after dispatchedTick", StringComparison.Ordinal)), "Expected transit timing validation error.");
+        AssertTrue(ex.Errors.Any(error => error.Contains("expectedRevenue must not be negative", StringComparison.Ordinal)), "Expected transit revenue validation error.");
+        AssertTrue(ex.Errors.Any(error => error.Contains("transportCost must not be negative", StringComparison.Ordinal)), "Expected transit cost validation error.");
+    }
+
+    var orphanTransit = save with
+    {
+        RouteTransits =
+        [
+            new RouteTransitSaveState($"{operationId}:dispatch-0002-00", "missing-operation", route.Id, route.FromNode, route.ToNode, "grain", Units: 1, DispatchedTick: 2, ArrivalTick: 3, ExpectedRevenue: 1m, TransportCost: 0m)
+        ]
+    };
+    try
+    {
+        SaveCodec.Serialize(orphanTransit);
+        throw new InvalidOperationException("Expected save validation to reject orphan route transit.");
+    }
+    catch (SaveValidationException ex)
+    {
+        AssertTrue(ex.Errors.Any(error => error.Contains("must reference a saved route operation", StringComparison.Ordinal)), "Expected transit operation reference validation error.");
+    }
+
+    var mismatchedTransit = save with
+    {
+        RouteTransits =
+        [
+            new RouteTransitSaveState($"{operationId}:dispatch-0003-00", operationId, route.Id, route.ToNode, route.FromNode, "grain", Units: 1, DispatchedTick: 2, ArrivalTick: 3, ExpectedRevenue: 1m, TransportCost: 0m)
+        ]
+    };
+    try
+    {
+        SaveCodec.Serialize(mismatchedTransit);
+        throw new InvalidOperationException("Expected save validation to reject transit that mismatches its route operation.");
+    }
+    catch (SaveValidationException ex)
+    {
+        AssertTrue(ex.Errors.Any(error => error.Contains("must match its saved route operation", StringComparison.Ordinal)), "Expected transit operation mismatch validation error.");
+    }
 }
 
 static void ScenarioObjectiveValidationRejectsInvalidState()

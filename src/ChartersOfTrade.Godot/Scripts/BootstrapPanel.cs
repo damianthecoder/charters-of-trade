@@ -1556,7 +1556,7 @@ public partial class BootstrapPanel : Control
             : $"Route Contract: P{bestContract.ShipmentPriority} {ResourceLabel(bestContract.ResourceId)} x{bestContract.Units}, net {FormatSignedMoney(bestContract.ExpectedNet)}\n");
         _testProbe.AppendText(_snapshot.ActiveRouteOperation is null
             ? "Route Operation: none active\n"
-            : $"Route Operation: {OperationBrief(_snapshot.ActiveRouteOperation)}, capacity {_snapshot.ActiveRouteOperation.UsedCapacity}/{_snapshot.ActiveRouteOperation.CapacityPerDay}\n");
+            : $"Route Operation: {OperationBrief(_snapshot.ActiveRouteOperation)}, network {_snapshot.ActiveRouteOperations.Count} ops, transit {_snapshot.RouteTransits.Count}, capacity {_snapshot.ActiveRouteOperation.UsedCapacity}/{_snapshot.ActiveRouteOperation.CapacityPerDay}\n");
         _testProbe.AppendText($"First Charter Season: {_snapshot.ScenarioObjective.CompletedCharters}/{_snapshot.ScenarioObjective.RequiredCharters} deliveries | stable {_snapshot.ScenarioObjective.StableNeeds}/{_snapshot.ScenarioObjective.RequiredStableNeeds} | score {_snapshot.ScenarioObjective.FinalScore}/100\n");
         _testProbe.AppendText(bestChain is null
             ? "Production Chains: none\n"
@@ -2000,16 +2000,19 @@ public partial class BootstrapPanel : Control
         string? invalidContractId = null,
         PrototypeRouteContractView? selectedContract = null)
     {
-        if (_contractSummary is null || _contractOptions is null || _contractActionButton is null || _visibleContracts.Count == 0)
+        if (_snapshot is null || _contractSummary is null || _contractOptions is null || _contractActionButton is null || _visibleContracts.Count == 0)
         {
             return;
         }
 
         var candidate = _visibleContracts[Math.Clamp(_contractOptions.Selected, 0, _visibleContracts.Count - 1)];
         var candidateIsSelected = selectedContractId is not null && string.Equals(candidate.Id, selectedContractId, StringComparison.Ordinal);
+        var candidateIsActive = _snapshot.ActiveRouteOperations.Any(operation => string.Equals(operation.SourceContractId, candidate.Id, StringComparison.Ordinal));
         var candidateIsBest = string.Equals(candidate.Id, _visibleContracts[0].Id, StringComparison.Ordinal);
         var summaryLead = candidateIsSelected
             ? "Selected contract"
+            : candidateIsActive
+                ? "Active operation"
             : candidateIsBest
                 ? "Best available"
                 : "Preview contract";
@@ -2028,12 +2031,14 @@ public partial class BootstrapPanel : Control
 
         _pendingContractId = candidate.Id;
         _contractSummary.Text = string.Join("\n", lines);
-        _contractActionButton.Disabled = candidateIsSelected;
+        _contractActionButton.Disabled = candidateIsActive;
         _contractActionButton.Text = candidateIsSelected
             ? "Selected Contract"
+            : candidateIsActive
+                ? "Operation Active"
             : selectedContract is null
                 ? "Select Contract"
-                : "Switch Contract";
+                : "Add Operation";
     }
 
     private void SelectVisibleRouteContract()
@@ -2072,7 +2077,8 @@ public partial class BootstrapPanel : Control
         }
 
         var previousHash = _snapshot.SaveHash;
-        if (!_session.ClearRouteOperation())
+        var active = SelectedActiveRouteOperation() ?? _snapshot.ActiveRouteOperation;
+        if (active is null || !_session.ClearRouteOperation(active.RouteId))
         {
             _routeOperationMessage = "No active route operation to stop.";
             UpdateRouteOperationControl();
@@ -2093,7 +2099,7 @@ public partial class BootstrapPanel : Control
             return;
         }
 
-        var active = _snapshot.ActiveRouteOperation;
+        var active = SelectedActiveRouteOperation() ?? _snapshot.ActiveRouteOperation;
         var lines = new List<string>();
         if (_routeOperationMessage is not null)
         {
@@ -2113,6 +2119,16 @@ public partial class BootstrapPanel : Control
         {
             var scope = OperationAppliesToCurrentSelection(active) ? "Active route operation" : "Active route operation elsewhere";
             lines.Add($"{scope}: {OperationSummary(active)}.");
+            if (_snapshot.RouteTransits.Any(transit => transit.RouteId == active.RouteId))
+            {
+                lines.Add($"In transit on route: {_snapshot.RouteTransits.Count(transit => transit.RouteId == active.RouteId)} shipments.");
+            }
+
+            if (_snapshot.ActiveRouteOperations.Count > 1)
+            {
+                lines.Add($"Network active: {_snapshot.ActiveRouteOperations.Count} operations across {_snapshot.ActiveRouteOperations.Select(operation => operation.RouteId).Distinct(StringComparer.Ordinal).Count()} routes.");
+            }
+
             _operationStopButton.Disabled = false;
             _operationStopButton.Text = "Stop Operation";
         }
@@ -2409,7 +2425,14 @@ public partial class BootstrapPanel : Control
         var pause = operation.CanDispatch
             ? "ready"
             : $"paused: {operation.PausedReason}";
-        return $"{ResourceLabel(operation.ResourceId)} x{operation.ExpectedUnits} {CityName(operation.FromNode)} -> {CityName(operation.ToNode)} on {RouteDisplayName(operation.RouteId)}; {pause}, capacity {operation.UsedCapacity}/{operation.CapacityPerDay} used, {operation.FreeCapacity} free, unmet served {operation.UnmetDemandServed}, net {FormatSignedMoney(operation.ExpectedNet)}";
+        var transit = _snapshot?.RouteTransits
+            .Where(item => item.RouteId == operation.RouteId && item.ResourceId == operation.ResourceId)
+            .OrderBy(item => item.ArrivalTick)
+            .FirstOrDefault();
+        var transitText = transit is null
+            ? "no cargo in transit"
+            : $"next arrival tick {transit.ArrivalTick} ({transit.RemainingTicks} left)";
+        return $"{ResourceLabel(operation.ResourceId)} x{operation.ExpectedUnits} {CityName(operation.FromNode)} -> {CityName(operation.ToNode)} on {RouteDisplayName(operation.RouteId)}; {pause}, capacity {operation.UsedCapacity}/{operation.CapacityPerDay} used, {operation.FreeCapacity} free, unmet served {operation.UnmetDemandServed}, {transitText}, net {FormatSignedMoney(operation.ExpectedNet)}";
     }
 
     private string OperationBrief(PrototypeRouteOperationView operation)
@@ -2454,6 +2477,19 @@ public partial class BootstrapPanel : Control
         }
 
         return _snapshot.AvailableContracts.FirstOrDefault(contract => contract.Id == _snapshot.SelectedContractId);
+    }
+
+    private PrototypeRouteOperationView? SelectedActiveRouteOperation()
+    {
+        if (_snapshot is null)
+        {
+            return null;
+        }
+
+        var routeId = SelectedRoutePolicyId();
+        return routeId is null
+            ? null
+            : _snapshot.ActiveRouteOperations.FirstOrDefault(operation => operation.RouteId == routeId);
     }
 
     private PrototypeRoutePolicyView? SelectedRoutePolicy()
