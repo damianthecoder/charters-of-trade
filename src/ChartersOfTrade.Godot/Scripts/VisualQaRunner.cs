@@ -48,17 +48,27 @@ public partial class VisualQaRunner : Control
             AssertQa(AnyVisibleTextContains(uiRoot, "First Charter Season"), "Scenario objective panel title was not present.");
 
             var sidebar = FindRequired<ScrollContainer>(uiRoot);
+            var stageStatusLog = FindRequired<RichTextLabel>(uiRoot, control => string.Equals(control.Name, "StageStatusLog", StringComparison.Ordinal));
             var scenarioObjectiveLog = FindRequired<RichTextLabel>(uiRoot, control => string.Equals(control.Name, "ScenarioObjectiveLog", StringComparison.Ordinal));
             var npcPressureLog = FindRequired<RichTextLabel>(uiRoot, control => string.Equals(control.Name, "NpcPressureLog", StringComparison.Ordinal));
             var routePolicyOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "RoutePolicyResourceOptions", StringComparison.Ordinal));
             var policyFocusOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "PolicyFocusOptions", StringComparison.Ordinal));
             var warehouseModeOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "WarehouseModeOptions", StringComparison.Ordinal));
+            var stageText = stageStatusLog.GetParsedText();
+            AssertQa(stageText.Contains("Stage 3 Production Chains", StringComparison.OrdinalIgnoreCase), "Stage status did not render production chain status.");
+            AssertQa(stageText.Contains("Stage 4 Route Operation", StringComparison.OrdinalIgnoreCase), "Stage status did not render route operation status.");
+            AssertQa(stageText.Contains("Stage 5 NPC Pressure", StringComparison.OrdinalIgnoreCase), "Stage status did not render NPC pressure status.");
+            AssertQa(stageText.Contains("Stage 6 First Charter", StringComparison.OrdinalIgnoreCase), "Stage status did not render first-charter status.");
+            AssertQa(stageText.Contains("Tick Feedback", StringComparison.OrdinalIgnoreCase), "Stage status did not render tick feedback.");
             var scenarioText = scenarioObjectiveLog.GetParsedText();
             AssertQa(scenarioText.Contains("Deliveries", StringComparison.OrdinalIgnoreCase), "Scenario objective panel did not render delivery progress.");
             AssertQa(scenarioText.Contains("Stable needs", StringComparison.OrdinalIgnoreCase), "Scenario objective panel did not render stable-needs progress.");
+            AssertQa(scenarioText.Contains("[", StringComparison.OrdinalIgnoreCase), "Scenario objective panel did not render progress bars.");
             AssertQa(scenarioText.Contains("Next:", StringComparison.OrdinalIgnoreCase), "Scenario objective panel did not render the next-step line.");
             AssertQa(npcPressureLog.GetParsedText().Contains("Top rival pressure:", StringComparison.OrdinalIgnoreCase), "NPC Pressure panel did not render the rival pressure heading.");
             AssertQa(npcPressureLog.GetParsedText().Contains("North Sea Company", StringComparison.OrdinalIgnoreCase), "NPC Pressure panel did not render a rival company line.");
+            AssertControlIntersectsViewport(stageStatusLog, "Stage 3-6 status log");
+            captures.Add(SaveCapture(outputDir, $"seed-{seed}-stage-status.png"));
             await ScrollControlIntoViewAsync(sidebar, scenarioObjectiveLog, "First Charter Season objective");
             captures.Add(SaveCapture(outputDir, $"seed-{seed}-scenario-objective.png"));
             await ScrollControlIntoViewAsync(sidebar, npcPressureLog, "NPC pressure log");

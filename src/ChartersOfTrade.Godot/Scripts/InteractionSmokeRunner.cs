@@ -55,10 +55,15 @@ public partial class InteractionSmokeRunner : Control
         var selectContractButton = FindButton(uiRoot, "Select Contract");
         var npcPressureLog = FindRequired<RichTextLabel>(uiRoot, control => string.Equals(control.Name, "NpcPressureLog", StringComparison.Ordinal));
         var scenarioObjectiveLog = FindRequired<RichTextLabel>(uiRoot, control => string.Equals(control.Name, "ScenarioObjectiveLog", StringComparison.Ordinal));
+        var stageStatusLog = FindRequired<RichTextLabel>(uiRoot, control => string.Equals(control.Name, "StageStatusLog", StringComparison.Ordinal));
 
         AssertSmoke(AnyVisibleTextContains(uiRoot, "System Test Bench"), "System Test Bench was not visible.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "Stage 3-6 Status"), "Stage status panel was not visible.");
+        AssertControlIntersectsViewport(stageStatusLog, "Stage 3-6 Status log");
+        AssertRichTextContains(stageStatusLog, "Stage 3 Production Chains", "Stage 4 Route Operation", "Stage 5 NPC Pressure", "Stage 6 First Charter", "Tick Feedback: T0");
         AssertSmoke(AnyVisibleTextContains(uiRoot, "First Charter Season"), "Scenario objective panel was not visible.");
         AssertRichTextContains(uiRoot, "Deliveries", "Stable needs");
+        AssertRichTextContains(scenarioObjectiveLog, "Cash       [", "Deliveries [", "Stable needs [");
         AssertSmoke(AnyVisibleTextContains(uiRoot, "Production Chains"), "Production Chains panel was not visible.");
         AssertRichTextContains(uiRoot, "Top rival pressure:", "North Sea Company");
         AssertSmoke(!runTwelveButton.Disabled, "Run 12 was disabled.");
@@ -192,17 +197,21 @@ public partial class InteractionSmokeRunner : Control
         await PressButtonAsync(selectContractButton);
         AssertSmoke(AnyVisibleTextContains(uiRoot, "Selected contract:"), "Selected contract summary did not appear.");
         AssertSmoke(AnyVisibleTextContains(uiRoot, "Active route operation"), "Route operation summary did not appear after selecting a contract.");
+        AssertRichTextContains(stageStatusLog, "Stage 4 Route Operation: Active", "capacity");
         AssertSmoke(AnyVisibleTextContains(uiRoot, "Route Operation:"), "System probe did not report route operation state.");
         AssertSmoke(AnyVisibleTextContains(uiRoot, "NPC Pressure:"), "System probe did not report NPC pressure state.");
 
         await PressButtonAsync(advanceButton);
         AssertSmoke(GetMetricValue(uiRoot, "Tick") == "1", "Advance Tick did not advance the tick metric to 1.");
+        AssertRichTextContains(stageStatusLog, "Tick Feedback: T1", "cashflow");
 
         await PressButtonAsync(runFiveButton);
         AssertSmoke(GetMetricValue(uiRoot, "Tick") == "6", "Run 5 did not advance the tick metric to 6.");
+        AssertRichTextContains(stageStatusLog, "Tick Feedback: T6", "cashflow");
 
         await PressButtonAsync(runTwelveButton);
         AssertSmoke(GetMetricValue(uiRoot, "Tick") == ExpectedFinalTick.ToString(), "Run 12 did not advance the tick metric to 18.");
+        AssertRichTextContains(stageStatusLog, $"Tick Feedback: T{ExpectedFinalTick}", "cashflow");
 
         await WaitFrames(6);
         AssertViewportHasVisualContent();
@@ -450,6 +459,15 @@ public partial class InteractionSmokeRunner : Control
             RichTextContent(label).Contains(first, StringComparison.OrdinalIgnoreCase)
             && RichTextContent(label).Contains(second, StringComparison.OrdinalIgnoreCase));
         AssertSmoke(found, $"No rich text panel contained both '{first}' and '{second}'. Visible rich text: {RichTextSnapshot(root)}");
+    }
+
+    private static void AssertRichTextContains(RichTextLabel label, params string[] expectedParts)
+    {
+        var text = RichTextContent(label);
+        foreach (var expected in expectedParts)
+        {
+            AssertSmoke(text.Contains(expected, StringComparison.OrdinalIgnoreCase), $"Rich text '{label.Name}' did not contain '{expected}'. Text: {text}");
+        }
     }
 
     private static string RichTextContent(RichTextLabel label)

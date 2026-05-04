@@ -35,6 +35,7 @@ public partial class BootstrapPanel : Control
     private RichTextLabel? _productionChains;
     private RichTextLabel? _npcPressure;
     private RichTextLabel? _scenarioObjective;
+    private RichTextLabel? _stageStatus;
     private RichTextLabel? _policy;
     private RichTextLabel? _testProbe;
     private SpinBox? _seedInput;
@@ -188,6 +189,11 @@ public partial class BootstrapPanel : Control
         AddMetric(metricGrid, "Unmet Demand");
         AddMetric(metricGrid, "Season Score");
         sidebar.AddChild(CreateSectionPanel("Company Ledger", metricGrid));
+
+        _stageStatus = CreateLog();
+        _stageStatus.Name = "StageStatusLog";
+        _stageStatus.CustomMinimumSize = new Vector2(0, 150);
+        sidebar.AddChild(CreateSectionPanel("Stage 3-6 Status", _stageStatus));
 
         var testStack = CreateSectionStack();
         testStack.AddChild(CreateSectionHint("Seed resets the same world, economy, routes, and save hash. Tick buttons advance the daily simulation so changes can be traced."));
@@ -501,6 +507,7 @@ public partial class BootstrapPanel : Control
         UpdateRouteOperationControl();
         UpdateRoutePolicyControl();
         UpdateWarnings();
+        UpdateStageStatus();
         UpdateProductionChains();
         UpdateNpcPressure();
         UpdateScenarioObjective();
@@ -538,6 +545,7 @@ public partial class BootstrapPanel : Control
         _productionChains = null;
         _npcPressure = null;
         _scenarioObjective = null;
+        _stageStatus = null;
         _policy = null;
         _testProbe = null;
         _seedInput = null;
@@ -970,6 +978,36 @@ public partial class BootstrapPanel : Control
         }
     }
 
+    private void UpdateStageStatus()
+    {
+        if (_snapshot is null || _stageStatus is null)
+        {
+            return;
+        }
+
+        var objective = _snapshot.ScenarioObjective;
+        var topChain = _snapshot.ProductionChainOpportunities.FirstOrDefault();
+        var activeOperation = _snapshot.ActiveRouteOperation;
+        var candidateOperation = _snapshot.RouteOperationCandidates.FirstOrDefault();
+        var topNpcPressure = _snapshot.NpcPressures.FirstOrDefault();
+        var currentLedger = _snapshot.Ledger.Where(entry => entry.Tick == _snapshot.Tick).ToArray();
+
+        _stageStatus.Clear();
+        _stageStatus.AppendText(topChain is null
+            ? "Stage 3 Production Chains: no current opportunity\n"
+            : $"Stage 3 Production Chains: {RecipeLabel(topChain.RecipeId)} at {topChain.CityName} | {(topChain.IsReady ? "ready" : $"bottleneck {ResourceLabel(topChain.BottleneckResourceId ?? "input")}")} | margin {FormatSignedMoney(topChain.ExpectedMargin)}\n");
+        _stageStatus.AppendText(activeOperation is not null
+            ? $"Stage 4 Route Operation: Active {ResourceLabel(activeOperation.ResourceId)} x{activeOperation.ExpectedUnits} on {RouteDisplayName(activeOperation.RouteId)} | capacity {activeOperation.UsedCapacity}/{activeOperation.CapacityPerDay}, {activeOperation.FreeCapacity} free | {(activeOperation.CanDispatch ? "dispatch ready" : $"paused {activeOperation.PausedReason}")}\n"
+            : candidateOperation is null
+                ? "Stage 4 Route Operation: no candidate available\n"
+                : $"Stage 4 Route Operation: Candidate {ResourceLabel(candidateOperation.ResourceId)} x{candidateOperation.ExpectedUnits} on {RouteDisplayName(candidateOperation.RouteId)} | net {FormatSignedMoney(candidateOperation.ExpectedNet)}\n");
+        _stageStatus.AppendText(topNpcPressure is null
+            ? "Stage 5 NPC Pressure: no rival pressure\n"
+            : $"Stage 5 NPC Pressure: {topNpcPressure.CompanyName} {NpcIntentLabel(topNpcPressure.Intent)} {ResourceLabel(topNpcPressure.ResourceId)} at {topNpcPressure.CityName} | pressure {topNpcPressure.Pressure.ToString("0.00", CultureInfo.InvariantCulture)}\n");
+        _stageStatus.AppendText($"Stage 6 First Charter: score {objective.FinalScore}/100 | deliveries {objective.CompletedCharters}/{objective.RequiredCharters} | resources {objective.DistinctResources}/{objective.RequiredDistinctResources} | stable {objective.StableNeeds}/{objective.RequiredStableNeeds}\n");
+        _stageStatus.AppendText($"Tick Feedback: T{_snapshot.Tick} cashflow {_snapshot.LastTickCashDelta:+0.00;-0.00;0.00} | events {currentLedger.Length} | {(objective.IsComplete ? ScenarioResultLabel(objective) : objective.NextStep)}\n");
+    }
+
     private void UpdateProductionChains()
     {
         if (_snapshot is null || _productionChains is null)
@@ -1066,12 +1104,32 @@ public partial class BootstrapPanel : Control
         var objective = _snapshot.ScenarioObjective;
         _scenarioObjective.Clear();
         _scenarioObjective.AppendText($"{objective.Summary}\n");
-        _scenarioObjective.AppendText($"Tick {objective.CurrentTick}/{objective.TickLimit} | Cash {objective.CurrentCash.ToString("0.00", CultureInfo.InvariantCulture)}/{objective.CashTarget.ToString("0.00", CultureInfo.InvariantCulture)}\n");
-        _scenarioObjective.AppendText($"Deliveries {objective.CompletedCharters}/{objective.RequiredCharters} | Resources {objective.DistinctResources}/{objective.RequiredDistinctResources}\n");
-        _scenarioObjective.AppendText($"Stable needs {objective.StableNeeds}/{objective.RequiredStableNeeds} for {objective.StabilityWindowTicks} ticks\n");
+        _scenarioObjective.AppendText($"Season {objective.CurrentTick}/{objective.TickLimit} | Score {objective.FinalScore}/100\n");
+        _scenarioObjective.AppendText($"Cash       {ProgressBar(objective.CurrentCash, objective.CashTarget)} {objective.CurrentCash.ToString("0.00", CultureInfo.InvariantCulture)}/{objective.CashTarget.ToString("0.00", CultureInfo.InvariantCulture)}\n");
+        _scenarioObjective.AppendText($"Deliveries {ProgressBar(objective.CompletedCharters, objective.RequiredCharters)} {objective.CompletedCharters}/{objective.RequiredCharters} | Resources {objective.DistinctResources}/{objective.RequiredDistinctResources}\n");
+        _scenarioObjective.AppendText($"Stable needs {ProgressBar(objective.StableNeeds, objective.RequiredStableNeeds)} {objective.StableNeeds}/{objective.RequiredStableNeeds} for {objective.StabilityWindowTicks} ticks\n");
         _scenarioObjective.AppendText(objective.IsComplete
             ? $"Result: {ScenarioResultLabel(objective)}\n"
             : $"Next: {objective.NextStep}\n");
+    }
+
+    private static string ProgressBar(decimal current, decimal target)
+    {
+        var ratio = target <= 0 ? 1.0 : Math.Clamp((double)(current / target), 0.0, 1.0);
+        return ProgressBar(ratio);
+    }
+
+    private static string ProgressBar(int current, int target)
+    {
+        var ratio = target <= 0 ? 1.0 : Math.Clamp((double)current / target, 0.0, 1.0);
+        return ProgressBar(ratio);
+    }
+
+    private static string ProgressBar(double ratio)
+    {
+        const int width = 10;
+        var filled = (int)Math.Round(Math.Clamp(ratio, 0.0, 1.0) * width, MidpointRounding.AwayFromZero);
+        return $"[{new string('#', filled)}{new string('.', width - filled)}]";
     }
 
     private static string ScenarioResultLabel(PrototypeScenarioObjectiveView objective)
@@ -2828,6 +2886,9 @@ public partial class PrototypeMapView : Control
             var selected = route.Id == _selectedRouteId;
             var related = _selectedCityId is not null && (route.FromNode == _selectedCityId || route.ToNode == _selectedCityId);
             var hovered = route.Id == _hoveredRouteId;
+            var activeOperation = snapshot.ActiveRouteOperation is not null && snapshot.ActiveRouteOperation.RouteId == route.Id
+                ? snapshot.ActiveRouteOperation
+                : null;
             var cash = LastCashForRoute(snapshot, route.Id);
             var pressure = RoutePressure(snapshot, route);
             var color = RouteColor(route.Mode, cash, pressure, _mapMode);
@@ -2847,10 +2908,16 @@ public partial class PrototypeMapView : Control
                 width += 1.2f;
             }
 
+            if (activeOperation is not null)
+            {
+                DrawLine(start, end, new Color(0.95f, 0.72f, 0.25f, 0.72f), width + 6.4f, true);
+                width = Math.Max(width + 2.0f, 7.2f);
+            }
+
             DrawLine(start, end, new Color(0.025f, 0.028f, 0.024f, alpha * 0.72f), width + 3.4f, true);
             DrawLine(start, end, color, width, true);
-            DrawRouteArrow(start, end, color, width, selected || hovered || related);
-            DrawRoutePulse(start, end, cash >= 0 ? color.Lightened(0.25f) : color, selected || hovered || related);
+            DrawRouteArrow(start, end, color, width, selected || hovered || related || activeOperation is not null);
+            DrawRoutePulse(start, end, cash >= 0 ? color.Lightened(0.25f) : color, selected || hovered || related || activeOperation is not null);
 
             if (cash < 0)
             {
@@ -2861,7 +2928,11 @@ public partial class PrototypeMapView : Control
                 DrawWarningMark((start + end) / 2.0f + new Vector2(-10, 10));
             }
 
-            if ((_mapMode == PrototypeMapMode.Profit && cash != 0) || selected || hovered)
+            if (activeOperation is not null)
+            {
+                DrawRouteOperationLabel(start, end, activeOperation);
+            }
+            else if ((_mapMode == PrototypeMapMode.Profit && cash != 0) || selected || hovered)
             {
                 DrawRouteCashLabel(start, end, cash);
             }
@@ -2878,6 +2949,14 @@ public partial class PrototypeMapView : Control
 
     private void DrawCities(PrototypeSnapshot snapshot)
     {
+        var chainCityIds = snapshot.ProductionChainOpportunities
+            .Take(3)
+            .Select(chain => chain.CityId)
+            .ToHashSet(StringComparer.Ordinal);
+        var npcCityIds = snapshot.NpcPressures
+            .Take(3)
+            .Select(pressure => pressure.CityId)
+            .ToHashSet(StringComparer.Ordinal);
         var labels = new List<(PrototypeCityView City, Vector2 Point, string Kind, double Pressure, bool Selected, bool Hovered, bool Related)>();
         foreach (var city in snapshot.Cities)
         {
@@ -2909,6 +2988,21 @@ public partial class PrototypeMapView : Control
             if (city.SupplySatisfaction < 0.80)
             {
                 DrawWarningMark(point + new Vector2(radius + 8.0f, -radius - 5.0f));
+            }
+
+            var hasChainSignal = chainCityIds.Contains(city.Id);
+            var hasNpcSignal = npcCityIds.Contains(city.Id);
+            if (hasChainSignal && hasNpcSignal)
+            {
+                DrawSystemBadge(point + new Vector2(0.0f, radius + 20.0f), "CHAIN/RIVAL", new Color(0.58f, 0.34f, 0.18f, 0.96f));
+            }
+            else if (hasChainSignal)
+            {
+                DrawSystemBadge(point + new Vector2(0.0f, radius + 20.0f), "CHAIN", new Color(0.24f, 0.54f, 0.38f, 0.96f));
+            }
+            else if (hasNpcSignal)
+            {
+                DrawSystemBadge(point + new Vector2(0.0f, radius + 20.0f), "RIVAL", new Color(0.66f, 0.19f, 0.16f, 0.96f));
             }
 
             labels.Add((city, point, kind, pressure, selected, hovered, related));
@@ -2962,6 +3056,21 @@ public partial class PrototypeMapView : Control
         DrawHudPill(panel.Position + new Vector2(326, 17), modeText, 142);
         DrawHudPill(panel.Position + new Vector2(476, 17), $"Seed {snapshot.World.Seed}", 124);
         DrawHudPill(panel.Position + new Vector2(608, 17), $"{snapshot.World.WorldGenVersion}", 112);
+        if (Size.X >= 1000)
+        {
+            var operation = snapshot.ActiveRouteOperation is not null
+                ? "Operation active"
+                : snapshot.RouteOperationCandidates.Count > 0
+                    ? "Operation ready"
+                    : "No operation";
+            var chain = snapshot.ProductionChainOpportunities.FirstOrDefault();
+            DrawHudPill(panel.Position + new Vector2(728, 17), $"Season {snapshot.ScenarioObjective.FinalScore}/100", 128);
+            DrawHudPill(panel.Position + new Vector2(864, 17), operation, 136);
+            if (Size.X >= 1180)
+            {
+                DrawHudPill(panel.Position + new Vector2(1008, 17), chain is null ? "No chain" : $"Chain {MapRecipeLabel(chain.RecipeId)}", 142);
+            }
+        }
     }
 
     private void DrawLegend(PrototypeSnapshot snapshot)
@@ -3096,6 +3205,16 @@ public partial class PrototypeMapView : Control
         DrawMapLabel((start + end) / 2.0f + new Vector2(8, -8), text);
     }
 
+    private void DrawRouteOperationLabel(Vector2 start, Vector2 end, PrototypeRouteOperationView operation)
+    {
+        var status = operation.CanDispatch ? "ACTIVE" : "PAUSED";
+        var text = $"{status} {MapResourceLabel(operation.ResourceId)} x{operation.ExpectedUnits} cap {operation.UsedCapacity}/{operation.CapacityPerDay}";
+        var accent = operation.CanDispatch
+            ? new Color(0.92f, 0.68f, 0.20f, 0.95f)
+            : new Color(0.68f, 0.20f, 0.16f, 0.95f);
+        DrawMapLabel((start + end) / 2.0f + new Vector2(10, -30), text, 154, accent);
+    }
+
     private static string CityMapLabel(PrototypeCityView city, double pressure)
     {
         return pressure > 0.18
@@ -3183,6 +3302,19 @@ public partial class PrototypeMapView : Control
         DrawRect(rect, new Color(0.075f, 0.083f, 0.078f, 0.94f));
         DrawRect(new Rect2(rect.Position, new Vector2(rect.Size.X, 1)), new Color(0.63f, 0.50f, 0.25f, 0.42f));
         DrawString(_font, position + new Vector2(10, 18), text, HorizontalAlignment.Left, width - 18, 12, new Color(0.90f, 0.91f, 0.84f, 1.0f));
+    }
+
+    private void DrawSystemBadge(Vector2 position, string text, Color accent)
+    {
+        var width = Math.Max(46.0f, text.Length * 6.5f + 14.0f);
+        var point = new Vector2(
+            Math.Clamp(position.X - width / 2.0f, 8.0f, Math.Max(8.0f, Size.X - width - 8.0f)),
+            Math.Clamp(position.Y - 10.0f, 82.0f, Math.Max(82.0f, Size.Y - 28.0f)));
+        var rect = new Rect2(point, new Vector2(width, 20));
+        DrawRect(new Rect2(rect.Position + new Vector2(1, 1), rect.Size), new Color(0.0f, 0.0f, 0.0f, 0.24f));
+        DrawRect(rect, new Color(0.040f, 0.046f, 0.042f, 0.90f));
+        DrawRect(new Rect2(rect.Position, new Vector2(3, rect.Size.Y)), accent);
+        DrawString(_font, point + new Vector2(8, 14), text, HorizontalAlignment.Left, width - 10, 10, new Color(0.95f, 0.95f, 0.88f, 1.0f));
     }
 
     private void DrawModeRailRow(Vector2 position, string text, PrototypeMapMode mode)
@@ -3291,6 +3423,19 @@ public partial class PrototypeMapView : Control
             > 0.25 => new Color(0.71f, 0.48f, 0.14f, 1.0f),
             _ => new Color(0.29f, 0.52f, 0.40f, 1.0f)
         };
+    }
+
+    private static string MapResourceLabel(string resourceId)
+    {
+        var words = resourceId.Split(new[] { '_', '-' }, StringSplitOptions.RemoveEmptyEntries);
+        return words.Length == 0
+            ? resourceId
+            : string.Join(" ", words.Select(word => CultureInfo.InvariantCulture.TextInfo.ToTitleCase(word.ToLowerInvariant())));
+    }
+
+    private static string MapRecipeLabel(string recipeId)
+    {
+        return MapResourceLabel(recipeId);
     }
 
     private void DrawCityStamp(Vector2 point, string kind, float radius, Color color)
