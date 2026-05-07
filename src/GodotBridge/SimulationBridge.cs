@@ -182,6 +182,7 @@ public static class StarterSaveFactory
             routes.Select(route => new RoutePolicySaveState(route.Id, routePolicyResources, null)).ToArray(),
             [],
             [],
+            [],
             null,
             FirstCharterSeason.CreateInitialState(1000m));
     }

@@ -23,6 +23,8 @@ var tests = new (string Name, Action Run)[]
     ("prototype production chain opportunities are deterministic", PrototypeProductionChainOpportunitiesAreDeterministic),
     ("prototype production chain opportunities explain inputs and outputs", PrototypeProductionChainOpportunitiesExplainInputsAndOutputs),
     ("prototype production chain opportunities respect warehouse reserve", PrototypeProductionChainOpportunitiesRespectWarehouseReserve),
+    ("prototype production focus changes save hash", PrototypeProductionFocusChangesSaveHash),
+    ("prototype production policy invalid targets are no-ops", PrototypeProductionPolicyInvalidTargetsAreNoOps),
     ("prototype session ticks deterministically", PrototypeSessionTicksDeterministically),
     ("prototype session advances all systems", PrototypeSessionAdvancesAllSystems),
     ("prototype route contracts are deterministic", PrototypeRouteContractsAreDeterministic),
@@ -33,11 +35,13 @@ var tests = new (string Name, Action Run)[]
     ("prototype route operation selection exposes active state", PrototypeRouteOperationSelectionExposesActiveState),
     ("prototype route operations support active network", PrototypeRouteOperationsSupportActiveNetwork),
     ("prototype route operations create transit queue", PrototypeRouteOperationsCreateTransitQueue),
+    ("prototype route throughput metrics are deterministic", PrototypeRouteThroughputMetricsAreDeterministic),
     ("prototype route operation stop prevents selected objective credit", PrototypeRouteOperationStopPreventsSelectedObjectiveCredit),
     ("prototype route operation pauses when cargo is blocked", PrototypeRouteOperationPausesWhenCargoIsBlocked),
     ("prototype scenario objective is deterministic", PrototypeScenarioObjectiveIsDeterministic),
     ("prototype scenario objective counts selected deliveries", PrototypeScenarioObjectiveCountsSelectedDeliveries),
     ("first charter season rules can be won", FirstCharterSeasonRulesCanBeWon),
+    ("scripted first charter season can win a benchmark seed", ScriptedFirstCharterSeasonCanWinABenchmarkSeed),
     ("prototype scenario objective stability ignores lowered policy", PrototypeScenarioObjectiveStabilityIgnoresLoweredPolicy),
     ("prototype scenario objective times out without charters", PrototypeScenarioObjectiveTimesOutWithoutCharters),
     ("prototype NPC pressure is deterministic", PrototypeNpcPressureIsDeterministic),
@@ -60,6 +64,8 @@ var tests = new (string Name, Action Run)[]
     ("economy production never creates negative stock", EconomyProductionNeverCreatesNegativeStock),
     ("save-load-save preserves hash", SaveLoadSavePreservesHash),
     ("warehouse policy save-load preserves hash", WarehousePolicySaveLoadPreservesHash),
+    ("production policy save-load preserves hash", ProductionPolicySaveLoadPreservesHash),
+    ("production policy validation rejects invalid state", ProductionPolicyValidationRejectsInvalidState),
     ("scenario objective save-load preserves hash", ScenarioObjectiveSaveLoadPreservesHash),
     ("route operation save-load preserves hash", RouteOperationSaveLoadPreservesHash),
     ("route transit validation rejects invalid state", RouteTransitValidationRejectsInvalidState),
@@ -595,6 +601,62 @@ static void PrototypeProductionChainOpportunitiesRespectWarehouseReserve()
     AssertEqual(beforeTickWarehouse, afterTickWarehouse);
 }
 
+static void PrototypeProductionFocusChangesSaveHash()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(424242);
+    var chain = session.Current.ProductionChainOpportunities.First(opportunity => opportunity.IsReady);
+    var initialHash = session.Current.SaveHash;
+
+    AssertTrue(session.SetProductionFocus(chain.CityId, chain.RecipeId), "Expected production focus to accept a known city and recipe.");
+    AssertEqual(0, session.Current.Tick);
+    AssertTrue(session.Current.SaveHash != initialHash, "Production focus should affect the state hash immediately.");
+    var policy = session.Current.ProductionPolicies.Single(item => item.CityId == chain.CityId);
+    AssertEqual(PrototypeSession.FocusProductionMode, policy.Mode);
+    AssertEqual(chain.RecipeId, policy.FocusRecipeId);
+    AssertTrue(policy.Summary.Contains(chain.RecipeId, StringComparison.Ordinal), "Production policy summary should name the focused recipe.");
+
+    var focusedHash = session.Current.SaveHash;
+    var tick = session.AdvanceTick();
+    AssertTrue(tick.Ledger.Any(entry => entry.Tick == tick.Tick
+        && entry.Category == "Production"
+        && entry.RelatedId == chain.CityId
+        && entry.Message.Contains($"focus {chain.RecipeId}", StringComparison.Ordinal)), "Focused production should be visible in the production ledger.");
+    AssertEqual(PrototypeSession.FocusProductionMode, tick.ProductionPolicies.Single(item => item.CityId == chain.CityId).Mode);
+
+    AssertTrue(session.ClearProductionFocus(chain.CityId), "Expected production focus to be clearable.");
+    var cleared = session.Current.ProductionPolicies.Single(item => item.CityId == chain.CityId);
+    AssertEqual(PrototypeSession.AutoProductionMode, cleared.Mode);
+    AssertEqual<string?>(null, cleared.FocusRecipeId);
+    AssertTrue(session.Current.SaveHash != focusedHash, "Clearing production focus should change the state hash.");
+
+    var paused = new SimulationBridge().CreatePrototypeSession(424242);
+    AssertTrue(paused.PauseProduction(chain.CityId), "Expected production pause to accept a known city.");
+    AssertEqual(PrototypeSession.PausedProductionMode, paused.Current.ProductionPolicies.Single(item => item.CityId == chain.CityId).Mode);
+    var pausedTick = paused.AdvanceTick();
+    AssertTrue(pausedTick.Ledger.Any(entry => entry.Tick == pausedTick.Tick
+        && entry.Category == "Production"
+        && entry.RelatedId == chain.CityId
+        && entry.Message.Contains("production paused", StringComparison.Ordinal)), "Paused production should be visible in the production ledger.");
+}
+
+static void PrototypeProductionPolicyInvalidTargetsAreNoOps()
+{
+    var session = new SimulationBridge().CreatePrototypeSession(424242);
+    var chain = session.Current.ProductionChainOpportunities.First();
+    var initialTick = session.Current.Tick;
+    var initialHash = session.Current.SaveHash;
+    var initialPolicies = ProductionPolicyFingerprint(session.Current);
+
+    AssertTrue(!session.SetProductionFocus("missing-city", chain.RecipeId), "Expected unknown city to be rejected.");
+    AssertTrue(!session.SetProductionFocus(chain.CityId, "missing-recipe"), "Expected unknown recipe to be rejected.");
+    AssertTrue(!session.ClearProductionFocus("missing-city"), "Expected unknown city clear to be rejected.");
+    AssertTrue(!session.PauseProduction("missing-city"), "Expected unknown city pause to be rejected.");
+
+    AssertEqual(initialTick, session.Current.Tick);
+    AssertEqual(initialHash, session.Current.SaveHash);
+    AssertEqual(initialPolicies, ProductionPolicyFingerprint(session.Current));
+}
+
 static void PrototypeSessionTicksDeterministically()
 {
     var bridge = new SimulationBridge();
@@ -810,6 +872,34 @@ static void PrototypeRouteOperationsCreateTransitQueue()
     AssertTrue(delivery.Delivery.Message.Contains("days in transit", StringComparison.Ordinal), "Delivery ledger should explain transit delay.");
 }
 
+static void PrototypeRouteThroughputMetricsAreDeterministic()
+{
+    var bridge = new SimulationBridge();
+    var first = bridge.CreatePrototypeSession(20260429);
+    var second = bridge.CreatePrototypeSession(20260429);
+    var contract = FindContract(first.Current, "Expected seed 20260429 to expose a dispatchable wood route operation.", candidate => candidate.ResourceId == "wood" && candidate.ExpectedNet > 0m);
+
+    AssertEqual(0, first.Current.RouteThroughput.TotalDispatches);
+    AssertEqual(0, first.Current.RouteThroughput.TotalArrivals);
+    AssertTrue(first.SelectRouteContract(contract.Id), $"Expected first session to activate {contract.Id}.");
+    AssertTrue(second.SelectRouteContract(contract.Id), $"Expected second session to activate {contract.Id}.");
+
+    var firstDelivery = AdvanceUntilRouteOperationDelivery(first, contract.RouteId, contract.ResourceId, maxTicks: 8);
+    var secondDelivery = AdvanceUntilRouteOperationDelivery(second, contract.RouteId, contract.ResourceId, maxTicks: 8);
+
+    AssertEqual(first.Current.SaveHash, second.Current.SaveHash);
+    AssertEqual(firstDelivery.Snapshot.Tick, secondDelivery.Snapshot.Tick);
+    AssertEqual(first.Current.RouteThroughput.TotalDispatches, second.Current.RouteThroughput.TotalDispatches);
+    AssertEqual(first.Current.RouteThroughput.TotalArrivals, second.Current.RouteThroughput.TotalArrivals);
+    AssertEqual(first.Current.RouteThroughput.TotalUnitsDispatched, second.Current.RouteThroughput.TotalUnitsDispatched);
+    AssertEqual(first.Current.RouteThroughput.TotalUnitsArrived, second.Current.RouteThroughput.TotalUnitsArrived);
+    AssertEqual(first.Current.RouteThroughput.TotalUnmetDemandServed, second.Current.RouteThroughput.TotalUnmetDemandServed);
+    AssertTrue(first.Current.RouteThroughput.TotalDispatches > 0, "Expected route operations to record at least one dispatch.");
+    AssertTrue(first.Current.RouteThroughput.TotalArrivals > 0, "Expected route operations to record at least one arrival.");
+    AssertTrue(first.Current.RouteThroughput.TotalUnitsDispatched >= first.Current.RouteThroughput.TotalUnitsArrived, "Arrived units should not exceed dispatched route-operation units.");
+    AssertTrue(first.Current.RouteThroughput.TotalUnmetDemandServed <= first.Current.RouteThroughput.TotalUnitsArrived, "Unmet demand served should not exceed arrived units.");
+}
+
 static void PrototypeRouteOperationStopPreventsSelectedObjectiveCredit()
 {
     var session = new SimulationBridge().CreatePrototypeSession(424242);
@@ -931,6 +1021,40 @@ static void FirstCharterSeasonRulesCanBeWon()
             FirstCharterSeason.RequiredCharterDeliveries - 1,
             FirstCharterSeason.RequiredDistinctResources,
             FirstCharterSeason.RequiredStableNeeds));
+}
+
+static void ScriptedFirstCharterSeasonCanWinABenchmarkSeed()
+{
+    var bridge = new SimulationBridge();
+    var outcomes = Enumerable.Range(1000, 25)
+        .Select(seed =>
+        {
+            var session = bridge.CreatePrototypeSession(seed);
+            var result = FirstCharterSeasonScriptedStrategy.Run(session);
+            return new ScriptedSeasonOutcome(seed, result, session.Current.SaveHash);
+        })
+        .ToArray();
+    var winner = outcomes.FirstOrDefault(outcome => string.Equals(outcome.Result.EndReason, FirstCharterSeason.Won, StringComparison.Ordinal));
+
+    AssertTrue(
+        winner is not null,
+        "Expected at least one scripted benchmark seed to win First Charter Season. Outcomes: "
+            + string.Join("; ", outcomes.Select(outcome =>
+                $"{outcome.Seed}:{outcome.Result.EndReason}:{outcome.Result.CompletedCharters}/{outcome.Result.DistinctResources}/{outcome.Result.StableNeeds}:{outcome.Result.ScenarioScore}")));
+
+    AssertTrue(winner!.Result.WinTick is not null, "Winning scripted run should report a win tick.");
+    AssertTrue(winner.Result.WinTick <= FirstCharterSeason.TickLimit, "Scripted win tick should stay inside the season limit.");
+    AssertTrue(winner.Result.CompletedCharters >= FirstCharterSeason.RequiredCharterDeliveries, "Scripted win should satisfy charter deliveries.");
+    AssertTrue(winner.Result.DistinctResources >= FirstCharterSeason.RequiredDistinctResources, "Scripted win should satisfy resource variety.");
+    AssertTrue(winner.Result.StableNeeds >= FirstCharterSeason.RequiredStableNeeds, "Scripted win should satisfy stable needs.");
+    AssertTrue(winner.Result.FinalCash >= FirstCharterSeason.CashTarget, "Scripted win should satisfy the cash target.");
+    AssertTrue(winner.Result.ProductionFocusChanges > 0, "Scripted strategy should use production focus.");
+    AssertTrue(winner.Result.RouteSelections > 0, "Scripted strategy should select route operations.");
+
+    var replay = bridge.CreatePrototypeSession(winner.Seed);
+    var replayResult = FirstCharterSeasonScriptedStrategy.Run(replay);
+    AssertEqual(winner.Result, replayResult);
+    AssertEqual(winner.FinalHash, replay.Current.SaveHash);
 }
 
 static void PrototypeScenarioObjectiveStabilityIgnoresLoweredPolicy()
@@ -1249,6 +1373,86 @@ static void WarehousePolicySaveLoadPreservesHash()
     catch (SaveValidationException ex)
     {
         AssertTrue(ex.Errors.Any(error => error.Contains("mode must be balanced or conservative", StringComparison.Ordinal)), "Expected warehouse policy mode validation error.");
+    }
+}
+
+static void ProductionPolicySaveLoadPreservesHash()
+{
+    var content = GameContentLoader.LoadFromDirectory(ContentPathResolver.FindContentDirectory());
+    var snapshot = new SimulationBridge().CreateNewGame(424242);
+    var routes = RoutePlanner.FromWorld(snapshot.World);
+    var market = StarterScenarioFactory.CreateInitialMarket(content.Resources);
+    var prices = new EconomyTick().CalculatePrices(content.Resources, market, StarterScenarioFactory.CreateNeeds(content.Resources));
+    var cityId = snapshot.World.Nodes[0].Id;
+    var save = StarterSaveFactory.Create(424242, snapshot.World.WorldGenVersion, content.ContentHash, snapshot.World.Nodes, routes, content.Resources, market, prices) with
+    {
+        ProductionPolicies =
+        [
+            new ProductionPolicySaveState(cityId, "grain_fields", PrototypeSession.FocusProductionMode)
+        ]
+    };
+
+    var firstHash = SaveCodec.ComputeStateHash(save);
+    var loaded = SaveCodec.Deserialize(SaveCodec.Serialize(save));
+    var secondHash = SaveCodec.ComputeStateHash(loaded);
+
+    AssertEqual(firstHash, secondHash);
+    AssertTrue(firstHash != SaveCodec.ComputeStateHash(save with { ProductionPolicies = [] }), "Production policy saves should affect state hash.");
+    AssertEqual(1, loaded.ProductionPolicies.Count);
+    AssertEqual(PrototypeSession.FocusProductionMode, loaded.ProductionPolicies[0].Mode);
+    AssertEqual(
+        SaveCodec.ComputeStateHash(save with { ProductionPolicies = [] }),
+        SaveCodec.ComputeStateHash(save with { ProductionPolicies = [new ProductionPolicySaveState(cityId, null, PrototypeSession.AutoProductionMode)] }));
+}
+
+static void ProductionPolicyValidationRejectsInvalidState()
+{
+    var content = GameContentLoader.LoadFromDirectory(ContentPathResolver.FindContentDirectory());
+    var snapshot = new SimulationBridge().CreateNewGame(424242);
+    var routes = RoutePlanner.FromWorld(snapshot.World);
+    var market = StarterScenarioFactory.CreateInitialMarket(content.Resources);
+    var prices = new EconomyTick().CalculatePrices(content.Resources, market, StarterScenarioFactory.CreateNeeds(content.Resources));
+    var save = StarterSaveFactory.Create(424242, snapshot.World.WorldGenVersion, content.ContentHash, snapshot.World.Nodes, routes, content.Resources, market, prices);
+    var cityId = snapshot.World.Nodes[0].Id;
+
+    try
+    {
+        SaveCodec.Serialize(save with { ProductionPolicies = [new ProductionPolicySaveState(cityId, null, PrototypeSession.FocusProductionMode)] });
+        throw new InvalidOperationException("Expected save validation to reject focus mode without a recipe.");
+    }
+    catch (SaveValidationException ex)
+    {
+        AssertTrue(ex.Errors.Any(error => error.Contains("focusRecipeId must be present", StringComparison.Ordinal)), "Expected focusRecipeId validation error.");
+    }
+
+    try
+    {
+        SaveCodec.Serialize(save with { ProductionPolicies = [new ProductionPolicySaveState(cityId, "grain_fields", PrototypeSession.AutoProductionMode)] });
+        throw new InvalidOperationException("Expected save validation to reject auto mode with a recipe.");
+    }
+    catch (SaveValidationException ex)
+    {
+        AssertTrue(ex.Errors.Any(error => error.Contains("must only be present in focus mode", StringComparison.Ordinal)), "Expected auto recipe validation error.");
+    }
+
+    try
+    {
+        SaveCodec.Serialize(save with { ProductionPolicies = [new ProductionPolicySaveState("missing-city", null, PrototypeSession.PausedProductionMode)] });
+        throw new InvalidOperationException("Expected save validation to reject an unknown production policy city.");
+    }
+    catch (SaveValidationException ex)
+    {
+        AssertTrue(ex.Errors.Any(error => error.Contains("must reference a saved city", StringComparison.Ordinal)), "Expected production policy city validation error.");
+    }
+
+    try
+    {
+        SaveCodec.Serialize(save with { ProductionPolicies = [new ProductionPolicySaveState(cityId, null, "rush")] });
+        throw new InvalidOperationException("Expected save validation to reject unknown production policy modes.");
+    }
+    catch (SaveValidationException ex)
+    {
+        AssertTrue(ex.Errors.Any(error => error.Contains("mode must be auto, focus, or paused", StringComparison.Ordinal)), "Expected production policy mode validation error.");
     }
 }
 
@@ -1785,6 +1989,19 @@ static string ProductionLineFingerprint(IEnumerable<PrototypeProductionResourceL
                 line.DestinationShipmentPriority)));
 }
 
+static string ProductionPolicyFingerprint(PrototypeSnapshot snapshot)
+{
+    return string.Join("|", snapshot.ProductionPolicies
+        .OrderBy(policy => policy.CityId, StringComparer.Ordinal)
+        .Select(policy => string.Format(
+            CultureInfo.InvariantCulture,
+            "{0}:{1}:{2}:{3}",
+            policy.CityId,
+            policy.Mode,
+            policy.FocusRecipeId ?? "",
+            policy.Summary)));
+}
+
 static string NpcPressureFingerprint(IEnumerable<PrototypeNpcPressureView> pressures)
 {
     return string.Join("|", pressures.Select(pressure =>
@@ -1880,3 +2097,8 @@ static string RoutePolicyFingerprint(PrototypeSnapshot snapshot)
                 string.Join(",", policy.ReservedResources.Order(StringComparer.Ordinal)),
                 policy.PriorityResourceId ?? "")));
 }
+
+internal sealed record ScriptedSeasonOutcome(
+    int Seed,
+    FirstCharterSeasonScriptedRunResult Result,
+    string FinalHash);

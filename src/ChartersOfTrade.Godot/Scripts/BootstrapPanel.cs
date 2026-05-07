@@ -33,6 +33,11 @@ public partial class BootstrapPanel : Control
     private RichTextLabel? _inspector;
     private RichTextLabel? _warnings;
     private RichTextLabel? _productionChains;
+    private Label? _productionFocusSummary;
+    private OptionButton? _productionFocusOptions;
+    private Button? _productionFocusButton;
+    private Button? _productionAutoButton;
+    private Button? _productionPauseButton;
     private RichTextLabel? _npcPressure;
     private RichTextLabel? _scenarioObjective;
     private RichTextLabel? _stageStatus;
@@ -56,6 +61,7 @@ public partial class BootstrapPanel : Control
     private SpinBox? _warehouseReorderInput;
     private Button? _warehouseApplyButton;
     private IReadOnlyList<PrototypeRouteContractView> _visibleContracts = [];
+    private IReadOnlyList<PrototypeProductionChainOpportunityView> _visibleProductionFocusChains = [];
     private IReadOnlyList<string> _visibleRoutePolicyResources = [];
     private IReadOnlyList<PrototypeCityView> _policyFocusCities = [];
     private IReadOnlyList<PrototypeMarketSignal> _visibleWarehousePolicies = [];
@@ -64,6 +70,7 @@ public partial class BootstrapPanel : Control
     private string? _pendingContractId;
     private string? _contractScopeKey;
     private string? _warehousePolicyMessage;
+    private string? _productionPolicyMessage;
     private string? _routePolicyMessage;
     private string? _routeOperationMessage;
     private string? _invalidContractId;
@@ -71,6 +78,7 @@ public partial class BootstrapPanel : Control
     private string? _selectedRouteId;
     private string? _policyFocusCityId;
     private bool _refreshingContractControl;
+    private bool _refreshingProductionPolicyControl;
     private bool _refreshingRoutePolicyControl;
     private bool _refreshingPolicyControl;
     private bool _refreshingWarehousePolicyControl;
@@ -192,7 +200,7 @@ public partial class BootstrapPanel : Control
 
         _stageStatus = CreateLog();
         _stageStatus.Name = "StageStatusLog";
-        _stageStatus.CustomMinimumSize = new Vector2(0, 150);
+        _stageStatus.CustomMinimumSize = new Vector2(0, 174);
         sidebar.AddChild(CreateSectionPanel("Stage 3-6 Status", _stageStatus));
 
         var testStack = CreateSectionStack();
@@ -253,9 +261,34 @@ public partial class BootstrapPanel : Control
         AddMapModeButton(mapModes, "Demand", PrototypeMapMode.Demand);
         sidebar.AddChild(CreateSectionPanel("Map Mode", mapModeStack));
 
+        var productionStack = CreateSectionStack();
+        productionStack.AddChild(CreateSectionHint("Set one city to prioritize a recipe, keep it automatic, or pause production while logistics catches up."));
+        _productionFocusSummary = CreateInlineLabel("Select a production chain to set city focus.");
+        productionStack.AddChild(_productionFocusSummary);
+        _productionFocusOptions = new OptionButton
+        {
+            Name = "ProductionFocusOptions",
+            SizeFlagsHorizontal = SizeFlags.ExpandFill,
+            CustomMinimumSize = new Vector2(0, 30)
+        };
+        _productionFocusOptions.ItemSelected += OnProductionFocusSelected;
+        productionStack.AddChild(_productionFocusOptions);
+        var productionButtons = new HBoxContainer();
+        productionButtons.AddThemeConstantOverride("separation", 6);
+        productionStack.AddChild(productionButtons);
+        _productionFocusButton = CreateButton("Set Focus");
+        _productionFocusButton.Pressed += SetVisibleProductionFocus;
+        productionButtons.AddChild(_productionFocusButton);
+        _productionAutoButton = CreateButton("Auto");
+        _productionAutoButton.Pressed += ClearVisibleProductionFocus;
+        productionButtons.AddChild(_productionAutoButton);
+        _productionPauseButton = CreateButton("Pause");
+        _productionPauseButton.Pressed += PauseVisibleProduction;
+        productionButtons.AddChild(_productionPauseButton);
         _productionChains = CreateLog();
         _productionChains.CustomMinimumSize = new Vector2(0, layout.WarningHeight);
-        sidebar.AddChild(CreateSectionPanel("Production Chains", _productionChains));
+        productionStack.AddChild(_productionChains);
+        sidebar.AddChild(CreateSectionPanel("Production Chains", productionStack));
 
         _npcPressure = CreateLog();
         _npcPressure.Name = "NpcPressureLog";
@@ -462,6 +495,7 @@ public partial class BootstrapPanel : Control
             _pendingContractId = null;
             _invalidContractId = null;
             _warehousePolicyMessage = null;
+            _productionPolicyMessage = null;
             _routePolicyMessage = null;
             _routeOperationMessage = null;
             UpdatePrototypeView();
@@ -508,6 +542,7 @@ public partial class BootstrapPanel : Control
         UpdateRoutePolicyControl();
         UpdateWarnings();
         UpdateStageStatus();
+        UpdateProductionFocusControl();
         UpdateProductionChains();
         UpdateNpcPressure();
         UpdateScenarioObjective();
@@ -543,6 +578,11 @@ public partial class BootstrapPanel : Control
         _inspector = null;
         _warnings = null;
         _productionChains = null;
+        _productionFocusSummary = null;
+        _productionFocusOptions = null;
+        _productionFocusButton = null;
+        _productionAutoButton = null;
+        _productionPauseButton = null;
         _npcPressure = null;
         _scenarioObjective = null;
         _stageStatus = null;
@@ -566,17 +606,20 @@ public partial class BootstrapPanel : Control
         _warehouseReorderInput = null;
         _warehouseApplyButton = null;
         _visibleContracts = [];
+        _visibleProductionFocusChains = [];
         _visibleRoutePolicyResources = [];
         _policyFocusCities = [];
         _visibleWarehousePolicies = [];
         _pendingContractId = null;
         _contractScopeKey = null;
         _warehousePolicyMessage = null;
+        _productionPolicyMessage = null;
         _routePolicyMessage = null;
         _routeOperationMessage = null;
         _invalidContractId = null;
         _policyFocusCityId = null;
         _refreshingContractControl = false;
+        _refreshingProductionPolicyControl = false;
         _refreshingRoutePolicyControl = false;
         _refreshingPolicyControl = false;
         _refreshingWarehousePolicyControl = false;
@@ -590,6 +633,7 @@ public partial class BootstrapPanel : Control
         _pendingContractId = null;
         _invalidContractId = null;
         _warehousePolicyMessage = null;
+        _productionPolicyMessage = null;
         _routePolicyMessage = null;
         _routeOperationMessage = null;
         UpdatePrototypeView();
@@ -603,6 +647,7 @@ public partial class BootstrapPanel : Control
         _pendingContractId = null;
         _invalidContractId = null;
         _warehousePolicyMessage = null;
+        _productionPolicyMessage = null;
         _routePolicyMessage = null;
         _routeOperationMessage = null;
         UpdatePrototypeView();
@@ -616,6 +661,7 @@ public partial class BootstrapPanel : Control
         _pendingContractId = null;
         _invalidContractId = null;
         _warehousePolicyMessage = null;
+        _productionPolicyMessage = null;
         _routePolicyMessage = null;
         _routeOperationMessage = null;
         UpdatePrototypeView();
@@ -813,6 +859,7 @@ public partial class BootstrapPanel : Control
             .Where(contract => contract.FromNode == city.Id || contract.ToNode == city.Id)
             .ToArray();
         var topChain = TopProductionChainForCity(city.Id);
+        var productionPolicy = ProductionPolicyForCity(city.Id);
         var topNpcPressure = _snapshot.NpcPressures
             .Where(pressure => string.Equals(pressure.CityId, city.Id, StringComparison.Ordinal))
             .FirstOrDefault();
@@ -832,6 +879,9 @@ public partial class BootstrapPanel : Control
         _inspector.AppendText(topChain is null
             ? "Production Chains: none currently available\n"
             : $"Top chain: {ProductionChainLine(topChain)}\n");
+        _inspector.AppendText(productionPolicy is null
+            ? "Production Focus: Auto\n"
+            : $"Production Focus: {ProductionPolicyLabel(productionPolicy)} | {productionPolicy.Summary}\n");
         _inspector.AppendText(topNpcPressure is null
             ? "NPC Pressure: none focused on this city\n"
             : $"NPC Pressure: {NpcPressureLine(topNpcPressure)}\n");
@@ -987,15 +1037,30 @@ public partial class BootstrapPanel : Control
 
         var objective = _snapshot.ScenarioObjective;
         var topChain = _snapshot.ProductionChainOpportunities.FirstOrDefault();
+        var activeProductionPolicy = _snapshot.ProductionPolicies.FirstOrDefault(policy =>
+            !string.Equals(policy.Mode, PrototypeSession.AutoProductionMode, StringComparison.Ordinal));
+        var focusedChain = activeProductionPolicy?.FocusRecipeId is null
+            ? null
+            : _snapshot.ProductionChainOpportunities.FirstOrDefault(chain =>
+                string.Equals(chain.CityId, activeProductionPolicy.CityId, StringComparison.Ordinal)
+                && string.Equals(chain.RecipeId, activeProductionPolicy.FocusRecipeId, StringComparison.Ordinal));
+        var policyChain = activeProductionPolicy is null
+            ? null
+            : _snapshot.ProductionChainOpportunities.FirstOrDefault(chain => string.Equals(chain.CityId, activeProductionPolicy.CityId, StringComparison.Ordinal));
+        var stageChain = focusedChain ?? policyChain ?? topChain;
+        var stageProductionPolicy = activeProductionPolicy ?? (stageChain is null ? null : ProductionPolicyForCity(stageChain.CityId));
         var activeOperation = _snapshot.ActiveRouteOperation;
         var candidateOperation = _snapshot.RouteOperationCandidates.FirstOrDefault();
         var topNpcPressure = _snapshot.NpcPressures.FirstOrDefault();
         var currentLedger = _snapshot.Ledger.Where(entry => entry.Tick == _snapshot.Tick).ToArray();
 
         _stageStatus.Clear();
-        _stageStatus.AppendText(topChain is null
+        _stageStatus.AppendText(objective.IsComplete
+            ? $"Priority: season {ScenarioResultLabel(objective)}\n"
+            : $"Priority: {objective.NextStep}\n");
+        _stageStatus.AppendText(stageChain is null
             ? "Stage 3 Production Chains: no current opportunity\n"
-            : $"Stage 3 Production Chains: {RecipeLabel(topChain.RecipeId)} at {topChain.CityName} | {(topChain.IsReady ? "ready" : $"bottleneck {ResourceLabel(topChain.BottleneckResourceId ?? "input")}")} | margin {FormatSignedMoney(topChain.ExpectedMargin)}\n");
+            : $"Stage 3 Production Chains: {RecipeLabel(stageChain.RecipeId)} at {stageChain.CityName} | {ProductionPolicyLabel(stageProductionPolicy ?? new PrototypeProductionPolicyView(stageChain.CityId, stageChain.CityName, PrototypeSession.AutoProductionMode, null, ""))} | {(stageChain.IsReady ? "ready" : $"bottleneck {ResourceLabel(stageChain.BottleneckResourceId ?? "input")}")} | margin {FormatSignedMoney(stageChain.ExpectedMargin)}\n");
         _stageStatus.AppendText(activeOperation is not null
             ? $"Stage 4 Route Operation: Active {ResourceLabel(activeOperation.ResourceId)} x{activeOperation.ExpectedUnits} on {RouteDisplayName(activeOperation.RouteId)} | capacity {activeOperation.UsedCapacity}/{activeOperation.CapacityPerDay}, {activeOperation.FreeCapacity} free | {(activeOperation.CanDispatch ? "dispatch ready" : $"paused {activeOperation.PausedReason}")}\n"
             : candidateOperation is null
@@ -1033,7 +1098,15 @@ public partial class BootstrapPanel : Control
             : $"Chains for {CityName(_selectedCityId)}:\n");
         foreach (var chain in chains)
         {
-            _productionChains.AppendText($"{ProductionChainLine(chain)}\n");
+            var policy = ProductionPolicyForCity(chain.CityId);
+            var marker = policy is not null
+                && string.Equals(policy.Mode, PrototypeSession.FocusProductionMode, StringComparison.Ordinal)
+                && string.Equals(policy.FocusRecipeId, chain.RecipeId, StringComparison.Ordinal)
+                ? "Focus | "
+                : policy is not null && string.Equals(policy.Mode, PrototypeSession.PausedProductionMode, StringComparison.Ordinal)
+                    ? "Paused | "
+                    : "";
+            _productionChains.AppendText($"{marker}{ProductionChainLine(chain)}\n");
         }
     }
 
@@ -1057,6 +1130,237 @@ public partial class BootstrapPanel : Control
             ? "local"
             : $"to {CityName(output.BestDestinationCityId)}";
         return $"{RecipeLabel(chain.RecipeId)} | {inputText} -> {outputText} {destination} | {FormatSignedMoney(chain.ExpectedMargin)} | {chain.Reason}";
+    }
+
+    private void UpdateProductionFocusControl()
+    {
+        if (_snapshot is null
+            || _productionFocusSummary is null
+            || _productionFocusOptions is null
+            || _productionFocusButton is null
+            || _productionAutoButton is null
+            || _productionPauseButton is null)
+        {
+            return;
+        }
+
+        var previousSelection = SelectedProductionFocusChain()?.Id;
+        _visibleProductionFocusChains = _snapshot.ProductionChainOpportunities
+            .Where(chain => _selectedCityId is null || string.Equals(chain.CityId, _selectedCityId, StringComparison.Ordinal))
+            .Take(8)
+            .ToArray();
+
+        _refreshingProductionPolicyControl = true;
+        _productionFocusOptions.Clear();
+
+        if (_visibleProductionFocusChains.Count == 0)
+        {
+            _productionFocusOptions.AddItem("No production chains");
+            _productionFocusOptions.Disabled = true;
+            SetProductionPolicyControlsEnabled(false);
+            _productionFocusSummary.Text = "No production focus target available.";
+            _refreshingProductionPolicyControl = false;
+            return;
+        }
+
+        var selectedIndex = 0;
+        for (var i = 0; i < _visibleProductionFocusChains.Count; i++)
+        {
+            var chain = _visibleProductionFocusChains[i];
+            _productionFocusOptions.AddItem(ProductionFocusOptionLabel(chain), i);
+            if (string.Equals(chain.Id, previousSelection, StringComparison.Ordinal))
+            {
+                selectedIndex = i;
+            }
+        }
+
+        _productionFocusOptions.Select(selectedIndex);
+        _productionFocusOptions.Disabled = false;
+        SetProductionPolicyControlsEnabled(true);
+        _refreshingProductionPolicyControl = false;
+        RefreshProductionFocusSummary();
+    }
+
+    private void OnProductionFocusSelected(long _)
+    {
+        if (_refreshingProductionPolicyControl)
+        {
+            return;
+        }
+
+        RefreshProductionFocusSummary();
+    }
+
+    private void RefreshProductionFocusSummary()
+    {
+        if (_snapshot is null || _productionFocusSummary is null)
+        {
+            return;
+        }
+
+        var chain = SelectedProductionFocusChain();
+        var cityId = chain?.CityId ?? _selectedCityId;
+        var policy = cityId is null ? null : ProductionPolicyForCity(cityId);
+        var message = _productionPolicyMessage is null ? "" : $"{_productionPolicyMessage}\n";
+        if (chain is null || policy is null)
+        {
+            _productionFocusSummary.Text = $"{message}Select a production chain to set city focus.";
+            return;
+        }
+
+        var status = chain.IsReady ? "ready" : $"blocked by {ResourceLabel(chain.BottleneckResourceId ?? "inputs")}";
+        _productionFocusSummary.Text = $"{message}{chain.CityName}: {ProductionPolicyLabel(policy)}. Preview {RecipeLabel(chain.RecipeId)} is {status}, margin {FormatSignedMoney(chain.ExpectedMargin)}.";
+    }
+
+    private void SetVisibleProductionFocus()
+    {
+        if (_session is null || _snapshot is null)
+        {
+            return;
+        }
+
+        var chain = SelectedProductionFocusChain();
+        if (chain is null)
+        {
+            _productionPolicyMessage = "Select a production chain before setting focus.";
+            RefreshProductionFocusSummary();
+            return;
+        }
+
+        var previousHash = _snapshot.SaveHash;
+        if (!_session.SetProductionFocus(chain.CityId, chain.RecipeId))
+        {
+            _productionPolicyMessage = $"Production focus rejected for {chain.CityName} {RecipeLabel(chain.RecipeId)}.";
+            RefreshProductionFocusSummary();
+            return;
+        }
+
+        _snapshot = _session.Current;
+        _selectedCityId ??= chain.CityId;
+        _policyFocusCityId ??= chain.CityId;
+        _productionPolicyMessage = $"Production focus: {chain.CityName} -> {RecipeLabel(chain.RecipeId)}; save {ShortHash(previousHash)} -> {ShortHash(_snapshot.SaveHash)}.";
+        KeepValidSelection();
+        UpdatePrototypeView();
+    }
+
+    private void ClearVisibleProductionFocus()
+    {
+        if (_session is null || _snapshot is null)
+        {
+            return;
+        }
+
+        var cityId = SelectedProductionPolicyCityId();
+        if (cityId is null)
+        {
+            _productionPolicyMessage = "Select a city or chain before clearing production focus.";
+            RefreshProductionFocusSummary();
+            return;
+        }
+
+        var previousHash = _snapshot.SaveHash;
+        if (!_session.ClearProductionFocus(cityId))
+        {
+            _productionPolicyMessage = $"Production auto mode rejected for {CityName(cityId)}.";
+            RefreshProductionFocusSummary();
+            return;
+        }
+
+        _snapshot = _session.Current;
+        _productionPolicyMessage = $"Production auto: {CityName(cityId)}; save {ShortHash(previousHash)} -> {ShortHash(_snapshot.SaveHash)}.";
+        KeepValidSelection();
+        UpdatePrototypeView();
+    }
+
+    private void PauseVisibleProduction()
+    {
+        if (_session is null || _snapshot is null)
+        {
+            return;
+        }
+
+        var cityId = SelectedProductionPolicyCityId();
+        if (cityId is null)
+        {
+            _productionPolicyMessage = "Select a city or chain before pausing production.";
+            RefreshProductionFocusSummary();
+            return;
+        }
+
+        var previousHash = _snapshot.SaveHash;
+        if (!_session.PauseProduction(cityId))
+        {
+            _productionPolicyMessage = $"Production pause rejected for {CityName(cityId)}.";
+            RefreshProductionFocusSummary();
+            return;
+        }
+
+        _snapshot = _session.Current;
+        _productionPolicyMessage = $"Production paused: {CityName(cityId)}; save {ShortHash(previousHash)} -> {ShortHash(_snapshot.SaveHash)}.";
+        KeepValidSelection();
+        UpdatePrototypeView();
+    }
+
+    private void SetProductionPolicyControlsEnabled(bool enabled)
+    {
+        if (_productionFocusButton is not null)
+        {
+            _productionFocusButton.Disabled = !enabled;
+        }
+
+        if (_productionAutoButton is not null)
+        {
+            _productionAutoButton.Disabled = !enabled;
+        }
+
+        if (_productionPauseButton is not null)
+        {
+            _productionPauseButton.Disabled = !enabled;
+        }
+    }
+
+    private PrototypeProductionChainOpportunityView? SelectedProductionFocusChain()
+    {
+        if (_productionFocusOptions is null || _visibleProductionFocusChains.Count == 0 || _productionFocusOptions.Selected < 0)
+        {
+            return null;
+        }
+
+        var index = Math.Clamp(_productionFocusOptions.Selected, 0, _visibleProductionFocusChains.Count - 1);
+        return _visibleProductionFocusChains[index];
+    }
+
+    private string? SelectedProductionPolicyCityId()
+    {
+        return SelectedProductionFocusChain()?.CityId ?? _selectedCityId;
+    }
+
+    private PrototypeProductionPolicyView? ProductionPolicyForCity(string cityId)
+    {
+        return _snapshot?.ProductionPolicies.FirstOrDefault(policy => string.Equals(policy.CityId, cityId, StringComparison.Ordinal));
+    }
+
+    private string ProductionFocusOptionLabel(PrototypeProductionChainOpportunityView chain)
+    {
+        var policy = ProductionPolicyForCity(chain.CityId);
+        var marker = policy is not null
+            && string.Equals(policy.Mode, PrototypeSession.FocusProductionMode, StringComparison.Ordinal)
+            && string.Equals(policy.FocusRecipeId, chain.RecipeId, StringComparison.Ordinal)
+            ? "Focus"
+            : chain.IsReady
+                ? "Ready"
+                : "Blocked";
+        return $"{chain.CityName} | {RecipeLabel(chain.RecipeId)} | {marker} | {FormatSignedMoney(chain.ExpectedMargin)}";
+    }
+
+    private static string ProductionPolicyLabel(PrototypeProductionPolicyView policy)
+    {
+        return policy.Mode switch
+        {
+            PrototypeSession.FocusProductionMode => $"Focus {policy.FocusRecipeId}",
+            PrototypeSession.PausedProductionMode => "Paused",
+            _ => "Auto"
+        };
     }
 
     private PrototypeProductionChainOpportunityView? TopProductionChainForCity(string cityId)
@@ -1539,6 +1843,7 @@ public partial class BootstrapPanel : Control
             .ThenByDescending(contract => contract.ExpectedNet)
             .FirstOrDefault();
         var bestChain = _snapshot.ProductionChainOpportunities.FirstOrDefault();
+        var bestChainPolicy = bestChain is null ? null : ProductionPolicyForCity(bestChain.CityId);
         var topNpcPressure = _snapshot.NpcPressures.FirstOrDefault();
         var policyCity = PolicyFocusCity();
         var currentLedger = _snapshot.Ledger.Where(entry => entry.Tick == _snapshot.Tick).ToArray();
@@ -1560,7 +1865,7 @@ public partial class BootstrapPanel : Control
         _testProbe.AppendText($"First Charter Season: {_snapshot.ScenarioObjective.CompletedCharters}/{_snapshot.ScenarioObjective.RequiredCharters} deliveries | stable {_snapshot.ScenarioObjective.StableNeeds}/{_snapshot.ScenarioObjective.RequiredStableNeeds} | score {_snapshot.ScenarioObjective.FinalScore}/100\n");
         _testProbe.AppendText(bestChain is null
             ? "Production Chains: none\n"
-            : $"Production Chains: {RecipeLabel(bestChain.RecipeId)} at {bestChain.CityName}, {FormatSignedMoney(bestChain.ExpectedMargin)}, {bestChain.Reason}\n");
+            : $"Production Chains: {RecipeLabel(bestChain.RecipeId)} at {bestChain.CityName}, {ProductionPolicyLabel(bestChainPolicy ?? new PrototypeProductionPolicyView(bestChain.CityId, bestChain.CityName, PrototypeSession.AutoProductionMode, null, ""))}, {FormatSignedMoney(bestChain.ExpectedMargin)}, {bestChain.Reason}\n");
         _testProbe.AppendText(topNpcPressure is null
             ? "NPC Pressure: none\n"
             : $"NPC Pressure: {NpcIntentLabel(topNpcPressure.Intent)} {ResourceLabel(topNpcPressure.ResourceId)} at {topNpcPressure.CityName}, pressure {topNpcPressure.Pressure.ToString("0.00", CultureInfo.InvariantCulture)}\n");
@@ -2646,6 +2951,8 @@ public partial class BootstrapPanel : Control
 
 public partial class PrototypeMapView : Control
 {
+    private sealed record MapCitySignal(string CityId, string Text, Color Accent, int Rank);
+
     private readonly Font _font = ThemeDB.FallbackFont;
     private IReadOnlyDictionary<(int X, int Y), TerrainCell> _terrainByPoint = new Dictionary<(int X, int Y), TerrainCell>();
     private PrototypeSnapshot? _snapshot;
@@ -2922,9 +3229,7 @@ public partial class PrototypeMapView : Control
             var selected = route.Id == _selectedRouteId;
             var related = _selectedCityId is not null && (route.FromNode == _selectedCityId || route.ToNode == _selectedCityId);
             var hovered = route.Id == _hoveredRouteId;
-            var activeOperation = snapshot.ActiveRouteOperation is not null && snapshot.ActiveRouteOperation.RouteId == route.Id
-                ? snapshot.ActiveRouteOperation
-                : null;
+            var activeOperation = snapshot.ActiveRouteOperations.FirstOrDefault(operation => operation.RouteId == route.Id);
             var cash = LastCashForRoute(snapshot, route.Id);
             var pressure = RoutePressure(snapshot, route);
             var color = RouteColor(route.Mode, cash, pressure, _mapMode);
@@ -2985,14 +3290,7 @@ public partial class PrototypeMapView : Control
 
     private void DrawCities(PrototypeSnapshot snapshot)
     {
-        var chainCityIds = snapshot.ProductionChainOpportunities
-            .Take(3)
-            .Select(chain => chain.CityId)
-            .ToHashSet(StringComparer.Ordinal);
-        var npcCityIds = snapshot.NpcPressures
-            .Take(3)
-            .Select(pressure => pressure.CityId)
-            .ToHashSet(StringComparer.Ordinal);
+        var systemSignals = MapCitySignals(snapshot);
         var labels = new List<(PrototypeCityView City, Vector2 Point, string Kind, double Pressure, bool Selected, bool Hovered, bool Related)>();
         foreach (var city in snapshot.Cities)
         {
@@ -3026,30 +3324,29 @@ public partial class PrototypeMapView : Control
                 DrawWarningMark(point + new Vector2(radius + 8.0f, -radius - 5.0f));
             }
 
-            var hasChainSignal = chainCityIds.Contains(city.Id);
-            var hasNpcSignal = npcCityIds.Contains(city.Id);
-            if (hasChainSignal && hasNpcSignal)
-            {
-                DrawSystemBadge(point + new Vector2(0.0f, radius + 20.0f), "CHAIN/RIVAL", new Color(0.58f, 0.34f, 0.18f, 0.96f));
-            }
-            else if (hasChainSignal)
-            {
-                DrawSystemBadge(point + new Vector2(0.0f, radius + 20.0f), "CHAIN", new Color(0.24f, 0.54f, 0.38f, 0.96f));
-            }
-            else if (hasNpcSignal)
-            {
-                DrawSystemBadge(point + new Vector2(0.0f, radius + 20.0f), "RIVAL", new Color(0.66f, 0.19f, 0.16f, 0.96f));
-            }
-
             labels.Add((city, point, kind, pressure, selected, hovered, related));
         }
 
         var occupiedLabels = new List<Rect2>
         {
             new(new Vector2(12, 12), new Vector2(Size.X - 24, 58)),
-            new(new Vector2(14, 78), new Vector2(150, 330)),
+            new(new Vector2(14, 78), new Vector2(150, 430)),
             new(new Vector2(14, Size.Y - 190), new Vector2(210, 174))
         };
+        var pointsByCity = labels.ToDictionary(label => label.City.Id, label => label, StringComparer.Ordinal);
+        var signalLaneByCity = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        foreach (var signal in systemSignals.OrderBy(signal => signal.Rank).ThenBy(signal => signal.Text, StringComparer.Ordinal))
+        {
+            if (!pointsByCity.TryGetValue(signal.CityId, out var label))
+            {
+                continue;
+            }
+
+            signalLaneByCity.TryGetValue(signal.CityId, out var lane);
+            signalLaneByCity[signal.CityId] = lane + 1;
+            DrawPlacedSystemBadge(label.Point, signal.Text, occupiedLabels, label.City.X < snapshot.World.Width / 2, signal.Accent, lane);
+        }
 
         foreach (var cityLabel in labels.OrderByDescending(label => label.Selected || label.Hovered || label.Related).ThenBy(label => label.City.Id, StringComparer.Ordinal))
         {
@@ -3066,6 +3363,33 @@ public partial class PrototypeMapView : Control
                 DrawPlacedMapLabel(cityLabel.Point, text, occupiedLabels, city.X < snapshot.World.Width / 2, CityKindColor(cityLabel.Kind, city.SupplySatisfaction));
             }
         }
+    }
+
+    private static List<MapCitySignal> MapCitySignals(PrototypeSnapshot snapshot)
+    {
+        var signals = new List<MapCitySignal>();
+        var rank = 0;
+
+        foreach (var chain in snapshot.ProductionChainOpportunities.Take(3))
+        {
+            var policy = snapshot.ProductionPolicies.FirstOrDefault(item => string.Equals(item.CityId, chain.CityId, StringComparison.Ordinal));
+            var focused = policy is not null
+                && string.Equals(policy.Mode, PrototypeSession.FocusProductionMode, StringComparison.Ordinal)
+                && string.Equals(policy.FocusRecipeId, chain.RecipeId, StringComparison.Ordinal);
+            var paused = policy is not null && string.Equals(policy.Mode, PrototypeSession.PausedProductionMode, StringComparison.Ordinal);
+            var status = focused ? "Focus" : paused ? "Paused" : chain.IsReady ? "Produce" : "Blocked";
+            var accent = chain.IsReady
+                ? new Color(0.24f, 0.54f, 0.38f, 0.96f)
+                : new Color(0.70f, 0.46f, 0.14f, 0.96f);
+            signals.Add(new MapCitySignal(chain.CityId, $"{status}: {MapRecipeLabel(chain.RecipeId)}", accent, rank++));
+        }
+
+        foreach (var pressure in snapshot.NpcPressures.Take(3))
+        {
+            signals.Add(new MapCitySignal(pressure.CityId, $"Rival: {MapResourceLabel(pressure.ResourceId)}", new Color(0.66f, 0.19f, 0.16f, 0.96f), rank++));
+        }
+
+        return signals;
     }
 
     private void DrawModeBanner(PrototypeSnapshot snapshot)
@@ -3094,8 +3418,8 @@ public partial class PrototypeMapView : Control
         DrawHudPill(panel.Position + new Vector2(608, 17), $"{snapshot.World.WorldGenVersion}", 112);
         if (Size.X >= 1000)
         {
-            var operation = snapshot.ActiveRouteOperation is not null
-                ? "Operation active"
+            var operation = snapshot.ActiveRouteOperations.Count > 0
+                ? $"Ops {snapshot.ActiveRouteOperations.Count} active"
                 : snapshot.RouteOperationCandidates.Count > 0
                     ? "Operation ready"
                     : "No operation";
@@ -3112,7 +3436,7 @@ public partial class PrototypeMapView : Control
     private void DrawLegend(PrototypeSnapshot snapshot)
     {
         var origin = new Vector2(18, 92);
-        var panel = new Rect2(origin - new Vector2(10, 14), new Vector2(150, 306));
+        var panel = new Rect2(origin - new Vector2(10, 14), new Vector2(150, 406));
         DrawRect(panel, new Color(0.050f, 0.055f, 0.051f, 0.86f));
         DrawRect(new Rect2(panel.Position, new Vector2(1, panel.Size.Y)), new Color(0.65f, 0.50f, 0.21f, 0.62f));
         DrawString(_font, origin, "Map Mode", HorizontalAlignment.Left, 118, 13, new Color(0.91f, 0.82f, 0.61f, 1.0f));
@@ -3153,6 +3477,12 @@ public partial class PrototypeMapView : Control
         DrawString(_font, cityLegend + new Vector2(32, 33), "port", HorizontalAlignment.Left, 82, 12);
         DrawCityStamp(cityLegend + new Vector2(12, 56), "market_town", 6.0f, CityKindColor("market_town", 1.0));
         DrawString(_font, cityLegend + new Vector2(32, 61), "market", HorizontalAlignment.Left, 82, 12);
+
+        var badgeLegend = origin + new Vector2(0, 296);
+        DrawString(_font, badgeLegend, "Overlays", HorizontalAlignment.Left, 118, 13, new Color(0.91f, 0.82f, 0.61f, 1.0f));
+        DrawBadgeLegendRow(badgeLegend + new Vector2(0, 22), new Color(0.24f, 0.54f, 0.38f, 0.96f), "production");
+        DrawBadgeLegendRow(badgeLegend + new Vector2(0, 46), new Color(0.66f, 0.19f, 0.16f, 0.96f), "rival move");
+        DrawBadgeLegendRow(badgeLegend + new Vector2(0, 70), new Color(0.92f, 0.68f, 0.20f, 0.95f), "active route");
 
         if (_selectedCityId is null && _selectedRouteId is null)
         {
@@ -3243,12 +3573,12 @@ public partial class PrototypeMapView : Control
 
     private void DrawRouteOperationLabel(Vector2 start, Vector2 end, PrototypeRouteOperationView operation)
     {
-        var status = operation.CanDispatch ? "ACTIVE" : "PAUSED";
-        var text = $"{status} {MapResourceLabel(operation.ResourceId)} x{operation.ExpectedUnits} cap {operation.UsedCapacity}/{operation.CapacityPerDay}";
+        var status = operation.CanDispatch ? "Route active" : "Route paused";
+        var text = $"{status}: {MapResourceLabel(operation.ResourceId)} x{operation.ExpectedUnits} cap {operation.UsedCapacity}/{operation.CapacityPerDay}";
         var accent = operation.CanDispatch
             ? new Color(0.92f, 0.68f, 0.20f, 0.95f)
             : new Color(0.68f, 0.20f, 0.16f, 0.95f);
-        DrawMapLabel((start + end) / 2.0f + new Vector2(10, -30), text, 154, accent);
+        DrawMapLabel((start + end) / 2.0f + new Vector2(10, -30), text, 194, accent);
     }
 
     private static string CityMapLabel(PrototypeCityView city, double pressure)
@@ -3340,17 +3670,75 @@ public partial class PrototypeMapView : Control
         DrawString(_font, position + new Vector2(10, 18), text, HorizontalAlignment.Left, width - 18, 12, new Color(0.90f, 0.91f, 0.84f, 1.0f));
     }
 
-    private void DrawSystemBadge(Vector2 position, string text, Color accent)
+    private void DrawBadgeLegendRow(Vector2 position, Color accent, string text)
     {
-        var width = Math.Max(46.0f, text.Length * 6.5f + 14.0f);
-        var point = new Vector2(
-            Math.Clamp(position.X - width / 2.0f, 8.0f, Math.Max(8.0f, Size.X - width - 8.0f)),
-            Math.Clamp(position.Y - 10.0f, 82.0f, Math.Max(82.0f, Size.Y - 28.0f)));
-        var rect = new Rect2(point, new Vector2(width, 20));
+        DrawRect(new Rect2(position + new Vector2(1, 1), new Vector2(14, 14)), new Color(0.0f, 0.0f, 0.0f, 0.24f));
+        DrawRect(new Rect2(position, new Vector2(14, 14)), new Color(0.040f, 0.046f, 0.042f, 0.90f));
+        DrawRect(new Rect2(position, new Vector2(4, 14)), accent);
+        DrawString(_font, position + new Vector2(24, 13), text, HorizontalAlignment.Left, 98, 11, new Color(0.88f, 0.89f, 0.82f, 1.0f));
+    }
+
+    private void DrawPlacedSystemBadge(Vector2 anchor, string text, List<Rect2> occupiedLabels, bool preferRight, Color accent, int lane)
+    {
+        var size = MeasureSystemBadge(text);
+        var lowerOffset = 22.0f + lane * 24.0f;
+        var upperOffset = -42.0f - lane * 24.0f;
+        var right = new[]
+        {
+            new Vector2(-size.X / 2.0f, lowerOffset),
+            new Vector2(18, upperOffset),
+            new Vector2(18, 2 + lane * 24.0f),
+            new Vector2(-size.X - 16, upperOffset),
+            new Vector2(-size.X - 16, 2 + lane * 24.0f)
+        };
+        var left = new[]
+        {
+            new Vector2(-size.X / 2.0f, lowerOffset),
+            new Vector2(-size.X - 16, upperOffset),
+            new Vector2(-size.X - 16, 2 + lane * 24.0f),
+            new Vector2(18, upperOffset),
+            new Vector2(18, 2 + lane * 24.0f)
+        };
+
+        foreach (var offset in preferRight ? right : left)
+        {
+            var point = ClampSystemBadgePosition(anchor + offset, size);
+            var rect = new Rect2(point, size);
+            if (IntersectsAny(rect, occupiedLabels))
+            {
+                continue;
+            }
+
+            occupiedLabels.Add(rect.Grow(4.0f));
+            DrawSystemBadge(point, text, accent, size);
+            return;
+        }
+
+        var fallback = ClampSystemBadgePosition(anchor + new Vector2(-size.X / 2.0f, lowerOffset), size);
+        var fallbackRect = DrawSystemBadge(fallback, text, accent, size);
+        occupiedLabels.Add(fallbackRect.Grow(4.0f));
+    }
+
+    private Rect2 DrawSystemBadge(Vector2 point, string text, Color accent, Vector2 size)
+    {
+        var rect = new Rect2(point, size);
         DrawRect(new Rect2(rect.Position + new Vector2(1, 1), rect.Size), new Color(0.0f, 0.0f, 0.0f, 0.24f));
         DrawRect(rect, new Color(0.040f, 0.046f, 0.042f, 0.90f));
         DrawRect(new Rect2(rect.Position, new Vector2(3, rect.Size.Y)), accent);
-        DrawString(_font, point + new Vector2(8, 14), text, HorizontalAlignment.Left, width - 10, 10, new Color(0.95f, 0.95f, 0.88f, 1.0f));
+        DrawString(_font, point + new Vector2(8, 15), text, HorizontalAlignment.Left, size.X - 12, 10, new Color(0.95f, 0.95f, 0.88f, 1.0f));
+        return rect;
+    }
+
+    private Vector2 ClampSystemBadgePosition(Vector2 point, Vector2 size)
+    {
+        return new Vector2(
+            Math.Clamp(point.X, 8.0f, Math.Max(8.0f, Size.X - size.X - 8.0f)),
+            Math.Clamp(point.Y, 82.0f, Math.Max(82.0f, Size.Y - size.Y - 8.0f)));
+    }
+
+    private static Vector2 MeasureSystemBadge(string text)
+    {
+        return new Vector2(Math.Max(70.0f, text.Length * 6.5f + 14.0f), 22.0f);
     }
 
     private void DrawModeRailRow(Vector2 position, string text, PrototypeMapMode mode)

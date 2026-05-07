@@ -104,6 +104,13 @@ public sealed record PrototypeRouteTransitView(
     decimal TransportCost,
     decimal ExpectedNet);
 
+public sealed record PrototypeRouteThroughputView(
+    int TotalDispatches,
+    int TotalArrivals,
+    int TotalUnitsDispatched,
+    int TotalUnitsArrived,
+    int TotalUnmetDemandServed);
+
 public sealed record PrototypeRoutePolicyView(
     string RouteId,
     IReadOnlyList<string> ReservedResources,
@@ -144,6 +151,13 @@ public sealed record PrototypeProductionChainOpportunityView(
     bool IsReady,
     string? CandidateRouteId,
     string Reason);
+
+public sealed record PrototypeProductionPolicyView(
+    string CityId,
+    string CityName,
+    string Mode,
+    string? FocusRecipeId,
+    string Summary);
 
 public sealed record PrototypeNpcPressureView(
     string Id,
@@ -212,9 +226,13 @@ public sealed record PrototypeSnapshot(
 
     public IReadOnlyList<PrototypeRouteTransitView> RouteTransits { get; init; } = [];
 
+    public PrototypeRouteThroughputView RouteThroughput { get; init; } = new(0, 0, 0, 0, 0);
+
     public IReadOnlyList<PrototypeRoutePolicyView> RoutePolicies { get; init; } = [];
 
     public IReadOnlyList<PrototypeProductionChainOpportunityView> ProductionChainOpportunities { get; init; } = [];
+
+    public IReadOnlyList<PrototypeProductionPolicyView> ProductionPolicies { get; init; } = [];
 
     public IReadOnlyList<PrototypeNpcPressureView> NpcPressures { get; init; } = [];
 
@@ -255,6 +273,7 @@ public sealed class PrototypeSession
     private readonly List<PrototypeLedgerEntry> _ledger = [];
     private readonly Dictionary<WarehousePolicyKey, WarehousePolicyOverride> _warehousePolicyOverrides = [];
     private readonly Dictionary<string, RoutePolicy> _routePolicies = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, ProductionPolicyState> _productionPolicies = new(StringComparer.Ordinal);
     private readonly Dictionary<string, RouteOperationState> _activeRouteOperations = new(StringComparer.Ordinal);
     private readonly List<RouteTransitState> _routeTransits = [];
 
@@ -263,6 +282,11 @@ public sealed class PrototypeSession
     private OpportunityScore _aiChoice = new("none", 0m);
     private string? _selectedContractId;
     private ScenarioObjectiveSaveState _scenarioObjective = FirstCharterSeason.CreateInitialState(1000m);
+    private int _routeThroughputTotalDispatches;
+    private int _routeThroughputTotalArrivals;
+    private int _routeThroughputTotalUnitsDispatched;
+    private int _routeThroughputTotalUnitsArrived;
+    private int _routeThroughputTotalUnmetDemandServed;
 
     private const int MinPolicyStock = 0;
     private const int MaxPolicyStock = 64;
@@ -270,6 +294,9 @@ public sealed class PrototypeSession
     private const string NpcCompanyName = "North Sea Company";
     public const string BalancedWarehouseMode = "balanced";
     public const string ConservativeWarehouseMode = "conservative";
+    public const string AutoProductionMode = "auto";
+    public const string FocusProductionMode = "focus";
+    public const string PausedProductionMode = "paused";
 
     public PrototypeSession(GeneratedWorld world, GameContent content, IReadOnlyList<TradeRoute> routes)
     {
@@ -339,6 +366,26 @@ public sealed class PrototypeSession
             _selectedContractId = null;
         }
 
+        Current = BuildSnapshot(Current.Tick);
+        return true;
+    }
+
+    public bool SelectActiveRouteOperation(string operationId)
+    {
+        if (string.IsNullOrWhiteSpace(operationId))
+        {
+            return false;
+        }
+
+        var operation = _activeRouteOperations.Values.FirstOrDefault(operation =>
+            string.Equals(operation.Id, operationId, StringComparison.Ordinal)
+            || string.Equals(operation.SourceContractId, operationId, StringComparison.Ordinal));
+        if (operation is null)
+        {
+            return false;
+        }
+
+        _selectedContractId = operation.SourceContractId;
         Current = BuildSnapshot(Current.Tick);
         return true;
     }
@@ -475,6 +522,42 @@ public sealed class PrototypeSession
         return true;
     }
 
+    public bool SetProductionFocus(string cityId, string recipeId)
+    {
+        if (!IsKnownCity(cityId) || !IsKnownRecipe(recipeId))
+        {
+            return false;
+        }
+
+        _productionPolicies[cityId] = new ProductionPolicyState(FocusProductionMode, recipeId);
+        Current = BuildSnapshot(Current.Tick);
+        return true;
+    }
+
+    public bool ClearProductionFocus(string cityId)
+    {
+        if (!IsKnownCity(cityId))
+        {
+            return false;
+        }
+
+        _productionPolicies.Remove(cityId);
+        Current = BuildSnapshot(Current.Tick);
+        return true;
+    }
+
+    public bool PauseProduction(string cityId)
+    {
+        if (!IsKnownCity(cityId))
+        {
+            return false;
+        }
+
+        _productionPolicies[cityId] = new ProductionPolicyState(PausedProductionMode, null);
+        Current = BuildSnapshot(Current.Tick);
+        return true;
+    }
+
     public PrototypeSnapshot AdvanceTick()
     {
         var nextTick = Current.Tick + 1;
@@ -545,10 +628,28 @@ public sealed class PrototypeSession
         var cash = 0m;
         foreach (var city in _cities.OrderBy(city => city.Id, StringComparer.Ordinal))
         {
-            var producedIds = new HashSet<string>(StringComparer.Ordinal);
-            foreach (var recipe in _content.Recipes.OrderBy(recipe => recipe.Id, StringComparer.Ordinal))
+            var policy = ProductionPolicyFor(city.Id);
+            if (string.Equals(policy.Mode, PausedProductionMode, StringComparison.Ordinal))
             {
-                if (!CanRunInCity(city, recipe, reservations))
+                _ledger.Add(new PrototypeLedgerEntry(tick, "Production", $"{city.Name}: production paused by company policy", 0m, city.Id));
+                continue;
+            }
+
+            var producedIds = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var recipe in ProductionRecipeOrder(policy))
+            {
+                var activeReservations = reservations;
+                if (string.Equals(policy.Mode, FocusProductionMode, StringComparison.Ordinal)
+                    && !string.Equals(recipe.Id, policy.FocusRecipeId, StringComparison.Ordinal)
+                    && policy.FocusRecipeId is not null
+                    && !producedIds.Contains(policy.FocusRecipeId))
+                {
+                    activeReservations = reservations
+                        .Concat(FocusInputReservations(city.Id, policy.FocusRecipeId))
+                        .ToArray();
+                }
+
+                if (!CanRunInCity(city, recipe, activeReservations))
                 {
                     continue;
                 }
@@ -571,12 +672,18 @@ public sealed class PrototypeSession
                 continue;
             }
 
+            var routeOutputReservations = reservations
+                .Where(reservation => string.Equals(reservation.CityId, city.Id, StringComparison.Ordinal))
+                .GroupBy(reservation => reservation.ResourceId, StringComparer.Ordinal)
+                .ToDictionary(group => group.Key, group => group.Sum(reservation => reservation.Amount), StringComparer.Ordinal);
             var cityCash = 0m;
             foreach (var recipe in _content.Recipes.Where(recipe => producedIds.Contains(recipe.Id)))
             {
                 foreach (var output in recipe.Outputs)
                 {
-                    var moved = Math.Min(output.Amount, city.CompanyWarehouse.Get(output.ResourceId));
+                    var protectedStock = WarehouseReserveFor(city, output.ResourceId) + routeOutputReservations.GetValueOrDefault(output.ResourceId);
+                    var movableStock = Math.Max(0, city.CompanyWarehouse.Get(output.ResourceId) - protectedStock);
+                    var moved = Math.Min(output.Amount, movableStock);
                     if (moved <= 0)
                     {
                         continue;
@@ -590,10 +697,43 @@ public sealed class PrototypeSession
 
             cityCash = RoundMoney(cityCash);
             cash += cityCash;
-            _ledger.Add(new PrototypeLedgerEntry(tick, "Production", $"{city.Name}: {producedIds.Count} recipes produced", cityCash, city.Id));
+            var focusText = string.Equals(policy.Mode, FocusProductionMode, StringComparison.Ordinal)
+                ? $"focus {policy.FocusRecipeId}; "
+                : "";
+            _ledger.Add(new PrototypeLedgerEntry(tick, "Production", $"{city.Name}: {focusText}{producedIds.Count} recipes produced", cityCash, city.Id));
         }
 
         return cash;
+    }
+
+    private IReadOnlyList<RecipeDef> ProductionRecipeOrder(ProductionPolicyState policy)
+    {
+        var recipes = _content.Recipes
+            .OrderBy(recipe => recipe.Id, StringComparer.Ordinal)
+            .ToArray();
+        if (!string.Equals(policy.Mode, FocusProductionMode, StringComparison.Ordinal) || policy.FocusRecipeId is null)
+        {
+            return recipes;
+        }
+
+        return recipes
+            .OrderByDescending(recipe => string.Equals(recipe.Id, policy.FocusRecipeId, StringComparison.Ordinal))
+            .ThenBy(recipe => recipe.Id, StringComparer.Ordinal)
+            .ToArray();
+    }
+
+    private IReadOnlyList<ProductionReservation> FocusInputReservations(string cityId, string focusRecipeId)
+    {
+        var recipe = _content.Recipes.FirstOrDefault(recipe => string.Equals(recipe.Id, focusRecipeId, StringComparison.Ordinal));
+        if (recipe is null || recipe.Inputs.Count == 0)
+        {
+            return [];
+        }
+
+        return recipe.Inputs
+            .GroupBy(input => input.ResourceId, StringComparer.Ordinal)
+            .Select(group => new ProductionReservation(cityId, group.Key, group.Sum(input => input.Amount)))
+            .ToArray();
     }
 
     private decimal RunLogistics(int tick, out IReadOnlyList<RouteOperationDispatchResult> routeOperationDispatches)
@@ -643,6 +783,9 @@ public sealed class PrototypeSession
             var net = RoundMoney(transit.ExpectedRevenue - transit.TransportCost);
             var unmetServed = Math.Min(transit.Units, demandGap);
             cash += net;
+            _routeThroughputTotalArrivals++;
+            _routeThroughputTotalUnitsArrived += transit.Units;
+            _routeThroughputTotalUnmetDemandServed += unmetServed;
             _ledger.Add(new PrototypeLedgerEntry(
                 tick,
                 "Logistics",
@@ -748,6 +891,8 @@ public sealed class PrototypeSession
                     revenue,
                     transportCost);
                 _routeTransits.Add(transit);
+                _routeThroughputTotalDispatches++;
+                _routeThroughputTotalUnitsDispatched += units;
                 _ledger.Add(new PrototypeLedgerEntry(
                     tick,
                     "Logistics",
@@ -1018,6 +1163,7 @@ public sealed class PrototypeSession
         var activeOperations = BuildActiveRouteOperations();
         var activeOperation = BuildActiveRouteOperation(activeOperations);
         var productionChains = BuildProductionChainOpportunities();
+        var productionPolicies = BuildProductionPolicyViews(productionChains);
         var npcPressures = BuildNpcPressures(productionChains, operationCandidates, activeOperation);
         var selectedContractId = activeOperation is not null && activeOperations.Any(operation => string.Equals(operation.SourceContractId, _selectedContractId, StringComparison.Ordinal))
             ? _selectedContractId
@@ -1062,8 +1208,15 @@ public sealed class PrototypeSession
             ActiveRouteOperation = activeOperation,
             ActiveRouteOperations = activeOperations,
             RouteTransits = BuildRouteTransitViews(tick),
+            RouteThroughput = new PrototypeRouteThroughputView(
+                _routeThroughputTotalDispatches,
+                _routeThroughputTotalArrivals,
+                _routeThroughputTotalUnitsDispatched,
+                _routeThroughputTotalUnitsArrived,
+                _routeThroughputTotalUnmetDemandServed),
             RoutePolicies = BuildRoutePolicyViews(),
             ProductionChainOpportunities = productionChains,
+            ProductionPolicies = productionPolicies,
             NpcPressures = npcPressures,
             ScenarioObjective = scenarioObjective
         };
@@ -1431,6 +1584,55 @@ public sealed class PrototypeSession
             .ToArray());
     }
 
+    private IReadOnlyList<PrototypeProductionPolicyView> BuildProductionPolicyViews(IReadOnlyList<PrototypeProductionChainOpportunityView> productionChains)
+    {
+        return _cities
+            .OrderBy(city => city.Id, StringComparer.Ordinal)
+            .Select(city =>
+            {
+                var policy = ProductionPolicyFor(city.Id);
+                var cityChains = productionChains
+                    .Where(chain => string.Equals(chain.CityId, city.Id, StringComparison.Ordinal))
+                    .ToArray();
+                var focused = policy.FocusRecipeId is null
+                    ? null
+                    : cityChains.FirstOrDefault(chain => string.Equals(chain.RecipeId, policy.FocusRecipeId, StringComparison.Ordinal));
+                var best = cityChains.FirstOrDefault();
+                return new PrototypeProductionPolicyView(
+                    city.Id,
+                    city.Name,
+                    policy.Mode,
+                    policy.FocusRecipeId,
+                    ProductionPolicySummary(policy, focused, best));
+            })
+            .ToArray();
+    }
+
+    private static string ProductionPolicySummary(
+        ProductionPolicyState policy,
+        PrototypeProductionChainOpportunityView? focused,
+        PrototypeProductionChainOpportunityView? best)
+    {
+        if (string.Equals(policy.Mode, PausedProductionMode, StringComparison.Ordinal))
+        {
+            return "paused by company policy";
+        }
+
+        if (string.Equals(policy.Mode, FocusProductionMode, StringComparison.Ordinal))
+        {
+            var status = focused is null
+                ? "focus target unavailable"
+                : focused.IsReady
+                    ? $"focus ready, margin {SignedMoney(focused.ExpectedMargin)}"
+                    : $"focus blocked by {focused.BottleneckResourceId ?? "inputs"}";
+            return $"{policy.FocusRecipeId}: {status}";
+        }
+
+        return best is null
+            ? "auto, no chain available"
+            : $"auto, best {best.RecipeId} {SignedMoney(best.ExpectedMargin)}";
+    }
+
     private IReadOnlyList<PrototypeNpcPressureView> BuildNpcPressures(
         IReadOnlyList<PrototypeProductionChainOpportunityView> productionChains,
         IReadOnlyList<PrototypeRouteOperationView> routeOperations,
@@ -1766,7 +1968,7 @@ public sealed class PrototypeSession
     private IReadOnlyList<ProductionReservation> ReservationsFor(IReadOnlyList<PrototypeRouteOperationView> operations)
     {
         return operations
-            .Where(operation => operation.CanDispatch)
+            .Where(ShouldReserveCargoForProduction)
             .Select(operation =>
             {
                 var source = _cities.FirstOrDefault(city => city.Id == operation.FromNode);
@@ -1775,12 +1977,20 @@ public sealed class PrototypeSession
                     return null;
                 }
 
-                var amount = Math.Min(ExportableWarehouseUnits(source, operation.ResourceId), Math.Max(1, operation.ExpectedUnits));
-                return amount <= 0 ? null : new ProductionReservation(source.Id, operation.ResourceId, amount);
+                var amount = operation.CanDispatch
+                    ? Math.Max(1, operation.ExpectedUnits)
+                    : RouteOperationUnitCap(operation.RouteId);
+                return new ProductionReservation(source.Id, operation.ResourceId, Math.Max(1, amount));
             })
             .Where(reservation => reservation is not null)
             .Select(reservation => reservation!)
             .ToArray();
+    }
+
+    private static bool ShouldReserveCargoForProduction(PrototypeRouteOperationView operation)
+    {
+        return operation.CanDispatch
+            || string.Equals(operation.PausedReason, "no exportable stock", StringComparison.Ordinal);
     }
 
     private int DemandGap(RuntimeCity city, string resourceId)
@@ -1905,10 +2115,23 @@ public sealed class PrototypeSession
                     ModeForSave(kvp.Value.Mode)))
                 .ToArray(),
             BuildRouteSavePolicies(),
+            BuildProductionPolicySaves(),
             BuildRouteOperationSaves(),
             BuildRouteTransitSaves(),
             selectedContractId,
             _scenarioObjective);
+    }
+
+    private IReadOnlyList<ProductionPolicySaveState> BuildProductionPolicySaves()
+    {
+        return _productionPolicies
+            .Where(kvp => !string.Equals(kvp.Value.Mode, AutoProductionMode, StringComparison.Ordinal))
+            .OrderBy(kvp => kvp.Key, StringComparer.Ordinal)
+            .Select(kvp => new ProductionPolicySaveState(
+                kvp.Key,
+                string.Equals(kvp.Value.Mode, FocusProductionMode, StringComparison.Ordinal) ? kvp.Value.FocusRecipeId : null,
+                kvp.Value.Mode))
+            .ToArray();
     }
 
     private IReadOnlyList<PrototypeRoutePolicyView> BuildRoutePolicyViews()
@@ -2052,6 +2275,25 @@ public sealed class PrototypeSession
             && !string.IsNullOrWhiteSpace(resourceId)
             && _cities.Any(city => string.Equals(city.Id, cityId, StringComparison.Ordinal))
             && _needs.Any(need => string.Equals(need.ResourceId, resourceId, StringComparison.Ordinal));
+    }
+
+    private bool IsKnownCity(string cityId)
+    {
+        return !string.IsNullOrWhiteSpace(cityId)
+            && _cities.Any(city => string.Equals(city.Id, cityId, StringComparison.Ordinal));
+    }
+
+    private bool IsKnownRecipe(string recipeId)
+    {
+        return !string.IsNullOrWhiteSpace(recipeId)
+            && _content.Recipes.Any(recipe => string.Equals(recipe.Id, recipeId, StringComparison.Ordinal));
+    }
+
+    private ProductionPolicyState ProductionPolicyFor(string cityId)
+    {
+        return _productionPolicies.TryGetValue(cityId, out var policy)
+            ? policy
+            : new ProductionPolicyState(AutoProductionMode, null);
     }
 
     private bool TryGetRoutePolicy(string routeId, out RoutePolicy policy)
@@ -2526,6 +2768,8 @@ public sealed class PrototypeSession
     private sealed record WarehousePolicy(int SafetyStock, int ReorderPoint, bool IsOverride, string Mode);
 
     private sealed record RoutePolicy(string RouteId, IReadOnlyList<string> ReservedResources, string? PriorityResourceId);
+
+    private sealed record ProductionPolicyState(string Mode, string? FocusRecipeId);
 
     private sealed record RouteOperationState(
         string Id,

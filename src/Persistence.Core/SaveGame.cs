@@ -44,6 +44,11 @@ public sealed record RoutePolicySaveState(
     IReadOnlyList<string> ReservedResources,
     string? PriorityResourceId);
 
+public sealed record ProductionPolicySaveState(
+    string CityId,
+    string? FocusRecipeId,
+    string Mode);
+
 public sealed record RouteOperationSaveState(
     string Id,
     string SourceContractId,
@@ -93,6 +98,7 @@ public sealed record SaveGame(
     FogOfWarState FogOfWar,
     IReadOnlyList<WarehousePolicySaveState> WarehousePolicies,
     IReadOnlyList<RoutePolicySaveState> RoutePolicies,
+    IReadOnlyList<ProductionPolicySaveState> ProductionPolicies,
     IReadOnlyList<RouteOperationSaveState> RouteOperations,
     IReadOnlyList<RouteTransitSaveState> RouteTransits,
     string? PendingRouteContractId,
@@ -100,7 +106,7 @@ public sealed record SaveGame(
 
 public static class SaveCodec
 {
-    public const int CurrentSaveVersion = 4;
+    public const int CurrentSaveVersion = 5;
 
     private static readonly JsonSerializerOptions Options = new()
     {
@@ -153,6 +159,16 @@ public static class SaveCodec
                 })
                 .OrderBy(policy => policy.RouteId, StringComparer.Ordinal)
                 .ToArray(),
+            ProductionPolicies = save.ProductionPolicies
+                .Where(policy => !IsDefaultProductionPolicy(policy))
+                .Select(policy => policy with
+                {
+                    CityId = policy.CityId.Trim(),
+                    FocusRecipeId = string.IsNullOrWhiteSpace(policy.FocusRecipeId) ? null : policy.FocusRecipeId.Trim(),
+                    Mode = policy.Mode.Trim()
+                })
+                .OrderBy(policy => policy.CityId, StringComparer.Ordinal)
+                .ToArray(),
             RouteOperations = save.RouteOperations
                 .OrderBy(operation => operation.Id, StringComparer.Ordinal)
                 .ToArray(),
@@ -165,6 +181,11 @@ public static class SaveCodec
             },
             ScenarioObjective = NormalizeScenarioObjective(save.ScenarioObjective)
         };
+    }
+
+    private static bool IsDefaultProductionPolicy(ProductionPolicySaveState policy)
+    {
+        return string.Equals(policy.Mode, "auto", StringComparison.Ordinal) && string.IsNullOrWhiteSpace(policy.FocusRecipeId);
     }
 
     private static string? NormalizeWarehousePolicyMode(string? mode)
@@ -349,6 +370,15 @@ public static class SaveValidator
             ValidateRoutePolicies(save, errors);
         }
 
+        if (save.ProductionPolicies is null)
+        {
+            errors.Add("productionPolicies must not be null");
+        }
+        else
+        {
+            ValidateProductionPolicies(save, errors);
+        }
+
         if (save.RouteOperations is null)
         {
             errors.Add("routeOperations must not be null");
@@ -486,6 +516,62 @@ public static class SaveValidator
             if (!seenRoutes.Contains(routeId))
             {
                 errors.Add($"route policy '{routeId}' must be present for every saved route");
+            }
+        }
+    }
+
+    private static void ValidateProductionPolicies(SaveGame save, List<string> errors)
+    {
+        var knownCityIds = save.Cities
+            .Where(city => !string.IsNullOrWhiteSpace(city.Id))
+            .Select(city => city.Id)
+            .ToHashSet(StringComparer.Ordinal);
+        var seenCityIds = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var policy in save.ProductionPolicies)
+        {
+            if (string.IsNullOrWhiteSpace(policy.CityId))
+            {
+                errors.Add("production policy cityId must not be empty");
+            }
+            else
+            {
+                if (!seenCityIds.Add(policy.CityId))
+                {
+                    errors.Add($"production policy '{policy.CityId}' must not be duplicated");
+                }
+
+                if (!knownCityIds.Contains(policy.CityId))
+                {
+                    errors.Add($"production policy '{policy.CityId}' must reference a saved city");
+                }
+            }
+
+            var validMode = string.Equals(policy.Mode, "auto", StringComparison.Ordinal)
+                || string.Equals(policy.Mode, "focus", StringComparison.Ordinal)
+                || string.Equals(policy.Mode, "paused", StringComparison.Ordinal);
+            if (string.IsNullOrWhiteSpace(policy.Mode))
+            {
+                errors.Add($"production policy '{policy.CityId}' mode must not be empty");
+            }
+            else if (!validMode)
+            {
+                errors.Add($"production policy '{policy.CityId}' mode must be auto, focus, or paused");
+            }
+
+            if (policy.FocusRecipeId is not null && string.IsNullOrWhiteSpace(policy.FocusRecipeId))
+            {
+                errors.Add($"production policy '{policy.CityId}' focusRecipeId must not be empty when present");
+            }
+
+            if (string.Equals(policy.Mode, "focus", StringComparison.Ordinal) && string.IsNullOrWhiteSpace(policy.FocusRecipeId))
+            {
+                errors.Add($"production policy '{policy.CityId}' focusRecipeId must be present in focus mode");
+            }
+
+            if (!string.Equals(policy.Mode, "focus", StringComparison.Ordinal) && policy.FocusRecipeId is not null)
+            {
+                errors.Add($"production policy '{policy.CityId}' focusRecipeId must only be present in focus mode");
             }
         }
     }

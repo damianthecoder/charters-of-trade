@@ -114,6 +114,19 @@ public partial class InteractionSmokeRunner : Control
         await WaitFrames(2);
         AssertSmoke(AnyVisibleTextContains(uiRoot, $"Focus city: {targetCity.Name}"), "Policy focus dropdown did not select the requested city.");
 
+        var productionFocusOptions = FindRequired<OptionButton>(uiRoot, control => string.Equals(control.Name, "ProductionFocusOptions", StringComparison.Ordinal));
+        var setProductionFocusButton = FindButton(uiRoot, "Set Focus");
+        await ScrollControlIntoViewAsync(sidebarScroll, productionFocusOptions, "Production focus options");
+        AssertSmoke(!productionFocusOptions.Disabled, "Production focus dropdown was disabled after selecting a city.");
+        AssertSmoke(productionFocusOptions.ItemCount > 0, "Production focus dropdown did not contain chain choices.");
+        AssertControlIntersectsViewport(setProductionFocusButton, "Set Focus");
+
+        var preProductionFocusHash = GetMetricValue(uiRoot, "Save Hash");
+        await PressButtonAsync(setProductionFocusButton);
+        AssertSmoke(GetMetricValue(uiRoot, "Save Hash") != preProductionFocusHash, "Production focus did not change the save hash.");
+        AssertSmoke(AnyVisibleTextContains(uiRoot, "Production focus:"), "Production focus did not produce confirmation text.");
+        AssertRichTextContains(stageStatusLog, "Stage 3 Production Chains", "Focus");
+
         await PressButtonAsync(safetyPolicyButton);
         AssertSmoke(safetyPolicyButton.ButtonPressed, "Safety policy view did not become selected.");
         AssertSmoke(policyFocusOptions.GetItemText(0) == "Auto safety", "Safety policy view did not relabel auto focus.");
